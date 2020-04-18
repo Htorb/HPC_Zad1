@@ -11,6 +11,7 @@
 // TODO two hashmaps; hash function
 // are weights positive?
 // TODO how can update modularity
+// TODO is the graph directed?
 
 using namespace std;
 
@@ -19,8 +20,8 @@ using tr = pair<pi, float>;
 using vi = vector<int>;
 using vf = vector<float>;
 
-float ITR_MODULARITY_THRESHOLD = 0.1;
-
+//float ITR_MODULARITY_THRESHOLD = 0.1;
+float NO_EDGE = -1;
 // class Graph {
 // public:
 
@@ -44,14 +45,12 @@ T sum(vector<T> v) {
 }
 
 template<typename T>
-vector<T> cumsum(vector<T> v) {
-    vector<T> cs;
+void cumsum(vector<T>& v) {
     int sum = 0;
-    for (auto val : v) {
-        sum += val;
-        cs.push_back(sum);
+    for (int i = 0; i < v.size(); ++i) {
+        sum += v[i];
+        v[i] = sum;
     }
-    return cs;
 }
 
 void computeMove(int i,
@@ -69,6 +68,8 @@ void computeMove(int i,
     hashMap[ci] = 0;
 
     for (int j = V[i]; j < V[i + 1]; ++j) {
+        if W[j] == NO_EDGE:
+            break;
         int cj = C[N[j]];
         if (hashMap.count(cj) == 0) {
             hashMap[cj] = 0;
@@ -99,6 +100,29 @@ void computeMove(int i,
     } else {
         newComm[i] = ci;
     }
+}
+
+float calculateModularity(const vi& V,
+                            const vi& N, 
+                            const vf& W, 
+                            const vi& C, 
+                            const vf& ac, 
+                            const float wm) {
+    int n = ac.size();
+    float Q = 0;
+    for (int i = 0; i < n; ++i) {
+        for (int j = V[i]; j < V[i + 1]; ++j) {
+            if W[j] == NO_EDGE:
+                break; 
+            if (C[N[j]] == C[i]) {
+                Q += W[j] / (2 * wm);
+            }
+        }
+    }
+    for (int i = 0; i < n; ++i) {
+        Q -= ac[i] * ac[i] / (4 * wm * wm);
+    }
+    return Q;
 }
 
 int main(int argc, char *argv[]) {
@@ -139,9 +163,10 @@ int main(int argc, char *argv[]) {
         float f;
         matrix_stream >> v1 >> v2 >> f;
         tmp.push_back(tr(pi(v1 - 1,v2 - 1),f));
-        if (v1 != v2) {
-            tmp.push_back(tr(pi(v2 - 1,v1 - 1),f));
-        }
+        // if graph is undirected
+        // if (v1 != v2) {
+        //     tmp.push_back(tr(pi(v2 - 1,v1 - 1),f));
+        // }
     }
 
     sort(tmp.begin(), tmp.end());
@@ -178,39 +203,49 @@ int main(int argc, char *argv[]) {
 
     vf ac = k;
 
-    float old_modularity = 0;
-    float new_modularity = 0;
-
     vi newComm(n,0);
     int itr = 0;
-    while (itr < 8 || new_modularity - old_modularity > ITR_MODULARITY_THRESHOLD) {
-        for (int i = 0; i < n; ++i) {
-            computeMove(i, newComm, V, N, W, C, k, ac, wm);
-        }
-        C = newComm;
-        ac.assign(ac.size(), 0);
-        for (int i = 0; i < n; ++i) {
-            ac[C[i]] += k[i];
-        }
-        itr++;
+    while (itr < 1) {
 
-        //modularity calculation
-        float Q = 0;
+        float oldQ;
+        float Q = calculateModularity(V, N, W, C, ac, wm);
+        do {
+            cout << "modularity: " << Q << endl;
+            cout << "clasters: ";
+            head(C, C.size());
+
+            for (int i = 0; i < n; ++i) {
+                computeMove(i, newComm, V, N, W, C, k, ac, wm);
+            }
+            C = newComm;
+            ac.assign(ac.size(), 0);
+            for (int i = 0; i < n; ++i) {
+                ac[C[i]] += k[i];
+            }
+
+            oldQ = Q;
+            Q = calculateModularity(V, N, W, C, ac, wm);
+
+        } while (Q - oldQ > threshold);
+
+        //aggregation phase
+        vi comSize(n, 0);
+        vi comDegree(n, 0);
+
         for (int i = 0; i < n; ++i) {
-            for (int j = V[i]; j < V[i + 1]; ++j) {
-                if (C[N[j]] == C[i]) {
-                    Q += W[j] / (2 * wm);
-                }
+            comSize[C[i]] += 1;
+            comDegree[C[i]] += V[i + 1] - V[i]; //works but only in the first iteration
+        }
+
+        vi newID(n, 0);
+        for (int i = 0; i < n; ++i) {
+            if (comSize[C[i]] != 0) {
+                newID[i] = 1;
             }
         }
-        for (int i = 0; i < n; ++i) {
-            Q -= ac[i] * ac[i] / (4 * wm * wm);
-        }
+        
 
-        cout << "modularity: " << Q << endl;
+        itr++;
+
     }
-
-    head(newComm);
-
-
 }
