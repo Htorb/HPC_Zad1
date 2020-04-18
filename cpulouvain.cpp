@@ -9,6 +9,8 @@
 // TODO bigger threshold int the first iteration
 // TODO bucket partition
 // TODO two hashmaps; hash function
+// are weights positive?
+// TODO how can update modularity
 
 using namespace std;
 
@@ -18,6 +20,11 @@ using vi = vector<int>;
 using vf = vector<float>;
 
 float ITR_MODULARITY_THRESHOLD = 0.1;
+
+// class Graph {
+// public:
+
+// }
 
 template<typename T>
 void head(vector<T> v, int n = 5) {
@@ -47,9 +54,51 @@ vector<T> cumsum(vector<T> v) {
     return cs;
 }
 
-void compute_move(int node, vi& newComm) {
+void computeMove(int i,
+                 vi& newComm, 
+                 const vi& V,
+                 const vi& N, 
+                 const vf& W, 
+                 const vi& C, 
+                 const vf& k, 
+                 const vf& ac, 
+                 const float wm) {
     map<int, float> hashMap;
+    int ci = C[i];
 
+    hashMap[ci] = 0;
+
+    for (int j = V[i]; j < V[i + 1]; ++j) {
+        int cj = C[N[j]];
+        if (hashMap.count(cj) == 0) {
+            hashMap[cj] = 0;
+        }
+        if (N[j] != i) {
+            hashMap[cj] += W[j];
+        }
+    }
+
+    int maxCj = -1;
+    float maxDeltaAlmostMod = -1;
+
+    for (auto const& [cj, wsum] : hashMap) {
+        if (cj < ci) {
+            float deltaAlmostMod = wsum / wm 
+                + k[i] * (ac[ci] - k[i] - ac[cj]) / (2 * wm * wm);
+
+            if (deltaAlmostMod > maxDeltaAlmostMod || deltaAlmostMod == maxDeltaAlmostMod && cj < maxCj) {
+                maxCj = cj;
+                maxDeltaAlmostMod = deltaAlmostMod;
+            }   
+        }
+    }
+
+    float maxDeltaMod = maxDeltaAlmostMod - hashMap[ci] / wm;
+    if (maxDeltaMod > 0) {
+        newComm[i] = maxCj;
+    } else {
+        newComm[i] = ci;
+    }
 }
 
 int main(int argc, char *argv[]) {
@@ -90,7 +139,9 @@ int main(int argc, char *argv[]) {
         float f;
         matrix_stream >> v1 >> v2 >> f;
         tmp.push_back(tr(pi(v1 - 1,v2 - 1),f));
-        tmp.push_back(tr(pi(v2 - 1,v1 - 1),f));
+        if (v1 != v2) {
+            tmp.push_back(tr(pi(v2 - 1,v1 - 1),f));
+        }
     }
 
     sort(tmp.begin(), tmp.end());
@@ -132,22 +183,34 @@ int main(int argc, char *argv[]) {
 
     vi newComm(n,0);
     int itr = 0;
-
-    while (itr == 0 || new_modularity - old_modularity > ITR_MODULARITY_THRESHOLD) {
+    while (itr < 8 || new_modularity - old_modularity > ITR_MODULARITY_THRESHOLD) {
         for (int i = 0; i < n; ++i) {
-            compute_move(i, newComm);
+            computeMove(i, newComm, V, N, W, C, k, ac, wm);
         }
         C = newComm;
         ac.assign(ac.size(), 0);
         for (int i = 0; i < n; ++i) {
             ac[C[i]] += k[i];
         }
-
-
         itr++;
+
+        //modularity calculation
+        float Q = 0;
+        for (int i = 0; i < n; ++i) {
+            for (int j = V[i]; j < V[i + 1]; ++j) {
+                if (C[N[j]] == C[i]) {
+                    Q += W[j] / (2 * wm);
+                }
+            }
+        }
+        for (int i = 0; i < n; ++i) {
+            Q -= ac[i] * ac[i] / (4 * wm * wm);
+        }
+
+        cout << "modularity: " << Q << endl;
     }
 
-    head(ac);
+    head(newComm);
 
 
 }
