@@ -206,8 +206,9 @@ int main(int argc, char *argv[]) {
         N[i] = tmp[i].first.second;
         W[i] = tmp[i].second;
     }
-    V[v_idx] = m;
-
+    while (v_idx < n + 1) {
+        V[v_idx++] = m;
+    }
 
     C = vi(n, 0);
     for (int i = 0; i < n; ++i) {
@@ -225,7 +226,7 @@ int main(int argc, char *argv[]) {
 
     finalC = C;
     int itr = 0;
-    while (itr < 1) {
+    while (itr < 2) {
 
         float oldQ;
         float Q = calculateModularity(V, N, W, C, ac, wm);
@@ -254,10 +255,14 @@ int main(int argc, char *argv[]) {
         vi comSize(n, 0);
         vi comDegree(n, 0);
 
+
+
         for (int i = 0; i < n; ++i) {
             comSize[C[i]] += 1;
             comDegree[C[i]] += V[i + 1] - V[i]; //works but only in the first iteration
         }
+
+
 
         vi newID(n, 0);
         for (int i = 0; i < n; ++i) {
@@ -304,27 +309,29 @@ int main(int argc, char *argv[]) {
         newN = vi(newm, NO_EDGE);
         newW = vf(newm, 0);
 
-        printVec(comm);
-        printVec(newV);
-        printVec(C);
-        
+
         map<int, float> hashMap;
         int oldc = C[comm[0]]; //can be n = 0?
         for (int idx = 0; idx <= n; ++idx) {
-            int i = comm[idx];
-            int ci = C[i];
-
-            if (i == n || oldc != ci) {
+            if (idx == n || oldc != C[comm[idx]]) {
                 int edgeId = newV[newID[oldc] - 1];
 
+
                 for (auto const& [cj, wsum] : hashMap) {
+
                     newN[edgeId] = newID[cj] - 1;
                     newW[edgeId] = wsum;
                     edgeId++;
                 }
-                oldc = C[comm[i]];
+
+                if (idx != n) {
+                    oldc = C[comm[idx]];
+                }
+
                 hashMap.clear();
             } else {
+                int i = comm[idx];
+                int ci = C[i];
                 for (int j = V[i]; j < V[i + 1]; ++j) {
                     if (N[j] == NO_EDGE)
                         break; 
@@ -337,9 +344,40 @@ int main(int argc, char *argv[]) {
                 }
             }
         }
-        printVec(newW);
-        cout << wm;
-        itr++;
 
+        newC = vi(newn, 0);
+        for (int i = 0; i < newn; ++i) {
+            newC[i] = i;
+        }
+
+        newk = vf(newn, 0);
+        for (int i = 0; i < newn; ++i) {
+            for (int j = newV[i]; j < newV[i + 1]; ++j) {
+                if (N[j] == NO_EDGE)
+                    break;
+                newk[i] += newW[j];
+            }
+        }
+
+        newac = newk;
+
+        // TODO saving final result in finalC
+        // for (int i = 0; i < finalC.size(); ++i) {
+        //     finalC[i] = C[newID[finalC[i]] - 1];
+        // }
+
+        //update graph
+        n = newn; 
+        m = newm; 
+        V = newV;
+        N = newN; 
+        W = newW;
+        C = newC; 
+        k = newk; 
+        ac = newac;
+
+        
+
+        itr++;
     }
 }
