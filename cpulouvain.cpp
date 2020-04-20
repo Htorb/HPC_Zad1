@@ -4,6 +4,7 @@
 #include <algorithm>  
 #include <vector>
 #include <map>
+#include <set>
 
 
 // TODO bigger threshold int the first iteration
@@ -134,9 +135,9 @@ float calculateModularity(const vi& V,
 
 
 int main(int argc, char *argv[]) {
-    bool show_assignment = false;
+    bool showAssignment = false;
     float threshold = 0;
-    string matrix_file;
+    string matrixFile;
 
     int n; //number vertices 
     int m; //number of edges
@@ -154,13 +155,13 @@ int main(int argc, char *argv[]) {
     while (i < argc) {
         string s(argv[i]);
         if (s == "-f") {
-            matrix_file = string(argv[i + 1]);
+            matrixFile = string(argv[i + 1]);
             i += 2;
         } else if (s == "-g") {
             threshold = strtof(argv[i + 1], NULL);
             i += 2;
         } else if (s == "-v") {
-            show_assignment = true;
+            showAssignment = true;
             i += 1;
         } else {
             exit(1);
@@ -168,10 +169,10 @@ int main(int argc, char *argv[]) {
     }
 
    
-    ifstream matrix_stream;
-    matrix_stream.open(matrix_file);
+    ifstream matrixStream;
+    matrixStream.open(matrixFile);
     int entries = 0;
-    matrix_stream >> n >> n >> entries;
+    matrixStream >> n >> n >> entries;
     
     m = 0;
     wm = 0;
@@ -179,7 +180,7 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < entries; i++) {
         int v1, v2;
         float f;
-        matrix_stream >> v1 >> v2 >> f;
+        matrixStream >> v1 >> v2 >> f;
 
         m++;
         wm += f;
@@ -361,10 +362,9 @@ int main(int argc, char *argv[]) {
 
         newac = newk;
 
-        // TODO saving final result in finalC
-        // for (int i = 0; i < finalC.size(); ++i) {
-        //     finalC[i] = C[newID[finalC[i]] - 1];
-        // }
+        for (int i = 0; i < finalC.size(); ++i) {
+            finalC[i] = newID[C[finalC[i]]] - 1;
+        }
 
         //update graph
         n = newn; 
@@ -380,4 +380,32 @@ int main(int argc, char *argv[]) {
 
         itr++;
     }
+
+
+    if (showAssignment) {
+        vector<pi> finalCPrime;
+        
+        for (int i = 0; i < finalC.size(); ++i) {
+            finalCPrime.push_back(pi(finalC[i], i));
+        }
+        
+        cout << std::set<int>(finalC.begin(), finalC.end()).size();
+        sort(finalCPrime.begin(), finalCPrime.end());
+        
+        int lastC = -1;
+        for (auto& p : finalCPrime) {
+            if (lastC != p.first) {
+                cout << endl << p.first;
+                lastC = p.first;
+            }
+            cout << " " << p.second;
+        }
+        cout << endl;
+    }
+
+    
+
+
+
+    return 0;
 }
