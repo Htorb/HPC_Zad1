@@ -20,6 +20,8 @@ using pi = pair<int, int>;
 using tr = pair<pi, float>;
 using vi = vector<int>;
 using vf = vector<float>;
+using vb = vector<bool>;
+
 
 //float ITR_MODULARITY_THRESHOLD = 0.1;
 float NO_EDGE = -1;
@@ -65,7 +67,8 @@ void computeMove(int i,
                  const vi& V,
                  const vi& N, 
                  const vf& W, 
-                 const vi& C, 
+                 const vi& C,
+                 const vb& isCommunityByItself, 
                  const vf& k, 
                  const vf& ac, 
                  const float wm) {
@@ -95,8 +98,10 @@ void computeMove(int i,
                 + k[i] * (ac[ci] - k[i] - ac[cj]) / (2 * wm * wm);
 
             if (deltaAlmostMod > maxDeltaAlmostMod || deltaAlmostMod == maxDeltaAlmostMod && cj < maxCj) { //TODO change to correct
-                maxCj = cj;
-                maxDeltaAlmostMod = deltaAlmostMod;
+                if (!isCommunityByItself[cj] || !isCommunityByItself[ci] || cj < ci) {
+                    maxCj = cj;
+                    maxDeltaAlmostMod = deltaAlmostMod;
+                }
             }   
         }
     }
@@ -226,20 +231,26 @@ int main(int argc, char *argv[]) {
     ac = k;
 
     finalC = C;
+    vi newComm;
+    vb isCommunityByItself;
+
     int itr = 0;
     while (itr < 2) {
 
         float oldQ;
         float Q = calculateModularity(V, N, W, C, ac, wm);
-        do {
-            cout << "modularity: " << Q << endl;
+        cout << "modularity: " << Q << endl;
             cout << "clasters: ";
             head(C, C.size());
-
-
-            vi newComm = C;
+        do {
+            newComm = C;
+            isCommunityByItself = vb(n, false);
             for (int i = 0; i < n; ++i) {
-                computeMove(i, newComm, V, N, W, C, k, ac, wm);
+                isCommunityByItself[C[i]] = true;
+            }
+
+            for (int i = 0; i < n; ++i) {
+                computeMove(i, newComm, V, N, W, C, isCommunityByItself, k, ac, wm);
             }
             C = newComm;
             ac.assign(ac.size(), 0);
@@ -249,6 +260,10 @@ int main(int argc, char *argv[]) {
 
             oldQ = Q;
             Q = calculateModularity(V, N, W, C, ac, wm);
+
+            cout << "modularity: " << Q << endl;
+            cout << "clasters: ";
+            head(C, C.size());
 
         } while (Q - oldQ > threshold);
 
