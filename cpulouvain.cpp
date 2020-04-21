@@ -251,6 +251,20 @@ void initializeIsCommunityByItself(int n, const vi& C, vb& isCommunityByItself) 
     }
 }
 
+void initializeDegree(int n, const vi& V, const vf& W, vi& degree) {
+    for (int i = 0; i < n; ++i) {
+        int ctr = 0;
+        for (int j = V[i]; j < V[i + 1]; ++j) {
+            if (W[j] == NO_EDGE)
+                break;
+            ctr++;
+        }
+        degree[i] = ctr;
+    }
+}
+
+
+
 int main(int argc, char *argv[]) {
     //commandline vars
     bool showAssignment = false;
@@ -328,7 +342,8 @@ int main(int argc, char *argv[]) {
         vi comSize(n, 0);
         vi comDegree(n, 0);
 
-
+        vi degree(n, 0);
+        initializeDegree(n, V, W, degree);
 
         for (int i = 0; i < n; ++i) {
             comSize[C[i]] += 1;
