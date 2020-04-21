@@ -25,10 +25,6 @@ using vb = vector<bool>;
 
 //float ITR_MODULARITY_THRESHOLD = 0.1;
 float NO_EDGE = -1;
-// class Graph {
-// public:
-
-// }
 
 template<typename T>
 void head(vector<T> v, int n = 5) {
@@ -180,7 +176,6 @@ int main(int argc, char *argv[]) {
     matrixStream >> n >> n >> entries;
     
     m = 0;
-    wm = 0;
     vector<tr> tmp;
     for (int i = 0; i < entries; i++) {
         int v1, v2;
@@ -188,7 +183,6 @@ int main(int argc, char *argv[]) {
         matrixStream >> v1 >> v2 >> f;
 
         m++;
-        wm += f;
         tmp.push_back(tr(pi(v1 - 1,v2 - 1),f));
         //if graph is undirected
         if (v1 != v2) {
@@ -215,6 +209,8 @@ int main(int argc, char *argv[]) {
     while (v_idx < n + 1) {
         V[v_idx++] = m;
     }
+
+    wm = sum(W) / 2;
 
     C = vi(n, 0);
     for (int i = 0; i < n; ++i) {
@@ -346,8 +342,6 @@ int main(int argc, char *argv[]) {
 
                 hashMap.clear();
             } else {
-                int i = comm[idx];
-                int ci = C[i];
                 for (int j = V[i]; j < V[i + 1]; ++j) {
                     if (N[j] == NO_EDGE)
                         break; 
@@ -355,8 +349,8 @@ int main(int argc, char *argv[]) {
                     if (hashMap.count(cj) == 0) {
                         hashMap[cj] = 0;
                     }
-                    if (cj != ci || i <= N[j])
-                        hashMap[cj] += W[j];
+                    cout << "edge from " << comm[idx] << " to " << N[j] << " with weight " << W[j] << " aggregated to cluster: " << C[comm[idx]] << endl;
+                    hashMap[cj] += W[j];
                 }
             }
         }
@@ -380,7 +374,10 @@ int main(int argc, char *argv[]) {
         for (int i = 0; i < finalC.size(); ++i) {
             finalC[i] = newID[C[finalC[i]]] - 1;
         }
-
+        
+        cout << "sum of weights:" << sum(W) << endl;
+        cout << "weights: ";
+        printVec(W);
         //update graph
         n = newn; 
         m = newm; 
@@ -390,8 +387,6 @@ int main(int argc, char *argv[]) {
         C = newC; 
         k = newk; 
         ac = newac;
-
-        
 
         itr++;
     }
@@ -417,10 +412,5 @@ int main(int argc, char *argv[]) {
         }
         cout << endl;
     }
-
-    
-
-
-
     return 0;
 }
