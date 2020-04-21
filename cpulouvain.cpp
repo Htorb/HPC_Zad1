@@ -14,6 +14,9 @@
 // TODO how can update modularity
 // TODO is the graph directed?
 
+#define pvec(a) \
+    do { std::cout << #a << ": "; printVec((a)) ; } while(false)
+
 using namespace std;
 
 using pi = pair<int, int>;
@@ -236,8 +239,7 @@ int main(int argc, char *argv[]) {
         float oldQ;
         float Q = calculateModularity(V, N, W, C, ac, wm);
         cout << "modularity: " << Q << endl;
-            cout << "clasters: ";
-            head(C, C.size());
+        pvec(C);
         do {
             newComm = C;
             isCommunityByItself = vb(n, false);
@@ -258,8 +260,7 @@ int main(int argc, char *argv[]) {
             Q = calculateModularity(V, N, W, C, ac, wm);
 
             cout << "modularity: " << Q << endl;
-            cout << "clasters: ";
-            head(C, C.size());
+            pvec(C);
 
         } while (Q - oldQ > threshold);
 
@@ -324,36 +325,39 @@ int main(int argc, char *argv[]) {
 
         map<int, float> hashMap;
         int oldc = C[comm[0]]; //can be n = 0?
-        for (int idx = 0; idx <= n; ++idx) {
-            if (idx == n || oldc != C[comm[idx]]) {
+        for (int idx = 0; idx < n; ++idx) {
+            int i = comm[idx];
+            int ci = C[i];
+            if (oldc != ci) {
                 int edgeId = newV[newID[oldc] - 1];
-
-
                 for (auto const& [cj, wsum] : hashMap) {
-
                     newN[edgeId] = newID[cj] - 1;
                     newW[edgeId] = wsum;
                     edgeId++;
                 }
-
-                if (idx != n) {
-                    oldc = C[comm[idx]];
-                }
-
+                oldc = C[comm[idx]];
                 hashMap.clear();
-            } else {
-                for (int j = V[i]; j < V[i + 1]; ++j) {
-                    if (N[j] == NO_EDGE)
-                        break; 
-                    int cj = C[N[j]];
-                    if (hashMap.count(cj) == 0) {
-                        hashMap[cj] = 0;
-                    }
-                    cout << "edge from " << comm[idx] << " to " << N[j] << " with weight " << W[j] << " aggregated to cluster: " << C[comm[idx]] << endl;
-                    hashMap[cj] += W[j];
+            } 
+            
+            for (int j = V[i]; j < V[i + 1]; ++j) {
+                if (N[j] == NO_EDGE)
+                    break; 
+                int cj = C[N[j]];
+                if (hashMap.count(cj) == 0) {
+                    hashMap[cj] = 0;
                 }
+                //cout << "edge from " << comm[idx] << " to " << N[j] << " with weight " << W[j] << " aggregated to cluster: " << C[comm[idx]] << endl;
+                hashMap[cj] += W[j];
             }
+            
         }
+        int edgeId = newV[newID[oldc] - 1];
+        for (auto const& [cj, wsum] : hashMap) {
+            newN[edgeId] = newID[cj] - 1;
+            newW[edgeId] = wsum;
+            edgeId++;
+        }
+
 
         newC = vi(newn, 0);
         for (int i = 0; i < newn; ++i) {
@@ -376,8 +380,6 @@ int main(int argc, char *argv[]) {
         }
         
         cout << "sum of weights:" << sum(W) << endl;
-        cout << "weights: ";
-        printVec(W);
         //update graph
         n = newn; 
         m = newm; 
