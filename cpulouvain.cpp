@@ -67,7 +67,7 @@ T positiveSum(vector<T> v) {
 template<typename T>
 void cumsum(vector<T>& v) {
     int sum = 0;
-    for (int i = 0; i < v.size(); ++i) {
+    for (size_t i = 0; i < v.size(); ++i) {
         sum += v[i];
         v[i] = sum;
     }
@@ -99,6 +99,26 @@ void parseCommandline(bool& showAssignment,
             exit(1);
         }
     }
+}
+
+void printClustering(int initialN, const vi& finalC) {
+    vector<pi> finalCPrime;
+    for (int i = 0; i < initialN; ++i) {
+        finalCPrime.push_back(pi(finalC[i], i));
+    }
+    
+    cout << std::set<int>(finalC.begin(), finalC.end()).size();
+    sort(finalCPrime.begin(), finalCPrime.end());
+    
+    int lastC = -1;
+    for (auto& p : finalCPrime) {
+        if (lastC != p.first) {
+            cout << endl << p.first;
+            lastC = p.first;
+        }
+        cout << " " << p.second;
+    }
+    cout << endl;
 }
 
 void readGraphFromFile(const string& matrixFile, 
@@ -135,7 +155,7 @@ void readGraphFromFile(const string& matrixFile,
     W = vf(m, 0);
 
     int v_idx = 0;
-    for (int i = 0; i < tmp.size(); i++) {
+    for (size_t i = 0; i < tmp.size(); i++) {
         while (v_idx <= tmp[i].first.first) {
             V[v_idx++] = i;
         }
@@ -200,13 +220,13 @@ void computeMove(int i,
 }
 
 
-float calculateModularity(const vi& V,
+float calculateModularity(  int n,
+                            const vi& V,
                             const vi& N, 
                             const vf& W, 
                             const vi& C, 
                             const vf& ac, 
                             const float wm) {
-    int n = ac.size();
     float Q = 0;
     for (int i = 0; i < n; ++i) {
         for (int j = V[i]; j < V[i + 1]; ++j) {
@@ -263,7 +283,28 @@ void initializeDegree(int n, const vi& V, const vf& W, vi& degree) {
     }
 }
 
+void initializeComSizeAndComDegree(int n, const vi& degree, const vi& C, vi& comSize, vi& comDegree) {
+    for (int i = 0; i < n; ++i) {
+        comSize[C[i]] += 1;
+        comDegree[C[i]] += degree[i]; 
+    }
+}
 
+void initializeNewID(int n, const vi& C, const vi& comSize, vi& newID) {
+    for (int i = 0; i < n; ++i) {
+        if (comSize[C[i]] != 0) {
+            newID[C[i]] = 1;
+        }
+    }
+}
+
+void initializeComm(int n, const vi& C, vi& comm, vi& vertexStart) {
+    for (int i = 0; i < n; ++i) {
+        vertexStart[C[i]] -= 1; //in paper is add
+        int res = vertexStart[C[i]];
+        comm[res] = i; 
+    }
+}
 
 int main(int argc, char *argv[]) {
     //commandline vars
@@ -284,29 +325,33 @@ int main(int argc, char *argv[]) {
     vf ac; //sum of cluster edges
     vb isCommunityByItself; 
 
-
+    int initialN; //number of vertices in the first iteration
     vi finalC; //final clustering result 
 
    
     parseCommandline(showAssignment, threshold, matrixFile, debug, argc, argv);
     readGraphFromFile(matrixFile, n, m, V, N, W);
+
+    initialN = n;
     wm = sum(W) / 2;
 
-    C = vi(n, 0);
-    initializeCommunities(n, C);
-
-    k = vf(n, 0);
-    initializeK(n, V, W, k);
-
-    ac = k; 
-    finalC = C;
+    finalC = vi(n, 0);
+    initializeCommunities(initialN, finalC);
 
     vi newComm;
-
     int itr = 0;
     while (itr < 2) { //TODO change loop condition
+        C = vi(n, 0);
+        initializeCommunities(n, C);
+
+        k = vf(n, 0);
+        initializeK(n, V, W, k);
+
+        ac = k; 
+
+        //modularity optimisation phase
         float Qp;
-        float Qc = calculateModularity(V, N, W, C, ac, wm);
+        float Qc = calculateModularity(n, V, N, W, C, ac, wm);
         cout << wm << endl;
 
         if (debug) {
@@ -329,7 +374,7 @@ int main(int argc, char *argv[]) {
             dassert(abs(sum(ac) - 2 * wm) < 0.0001);
 
             Qp = Qc;
-            Qc = calculateModularity(V, N, W, C, ac, wm);
+            Qc = calculateModularity(n, V, N, W, C, ac, wm);
 
             if (debug) {
                 cout << "modularity: " << Qc << endl;
@@ -345,21 +390,12 @@ int main(int argc, char *argv[]) {
         vi degree(n, 0);
         initializeDegree(n, V, W, degree);
 
-        for (int i = 0; i < n; ++i) {
-            comSize[C[i]] += 1;
-            comDegree[C[i]] += V[i + 1] - V[i]; //works but only in the first iteration
-        }
-
-
+        initializeComSizeAndComDegree(n, degree, C, comSize, comDegree);
 
         vi newID(n, 0);
-        for (int i = 0; i < n; ++i) {
-            if (comSize[C[i]] != 0) {
-                newID[C[i]] = 1;
-            }
-        }
-        
 
+        initializeNewID(n, C, comSize, newID);
+       
         cumsum(newID);
 
         vi edgePos = comDegree;
@@ -369,11 +405,7 @@ int main(int argc, char *argv[]) {
         cumsum(vertexStart);
 
         vi comm(n, 0);
-        for (int i = 0; i < n; ++i) {
-            vertexStart[C[i]] -= 1; //in paper is add
-            int res = vertexStart[C[i]];
-            comm[res] = i; 
-        }
+        initializeComm(n, C, comm, vertexStart);
 
          
         //merge community
@@ -383,12 +415,10 @@ int main(int argc, char *argv[]) {
         vi newV;
         vi newN; 
         vf newW;
-        vi newC; 
-        vf newk; 
-        vf newac; 
 
         newn = newID.back();
         newm = edgePos.back();
+
         newV = vi(newn + 1, 0);
         for (int i = 0; i < n; ++i) {
             newV[newID[C[i]]] = edgePos[C[i]];
@@ -396,7 +426,6 @@ int main(int argc, char *argv[]) {
 
         newN = vi(newm, -1);
         newW = vf(newm, NO_EDGE);
-
 
         map<int, float> hashMap;
         int oldc = C[comm[0]]; //can be n = 0?
@@ -421,11 +450,11 @@ int main(int argc, char *argv[]) {
                 if (hashMap.count(cj) == 0) {
                     hashMap[cj] = 0;
                 }
-                //cout << "edge from " << comm[idx] << " to " << N[j] << " with weight " << W[j] << " aggregated to cluster: " << C[comm[idx]] << endl;
                 hashMap[cj] += W[j];
             }
             
         }
+
         int edgeId = newV[newID[oldc] - 1];
         for (auto const& [cj, wsum] : hashMap) {
             newN[edgeId] = newID[cj] - 1;
@@ -434,23 +463,7 @@ int main(int argc, char *argv[]) {
         }
 
 
-        newC = vi(newn, 0);
-        for (int i = 0; i < newn; ++i) {
-            newC[i] = i;
-        }
-
-        newk = vf(newn, 0);
-        for (int i = 0; i < newn; ++i) {
-            for (int j = newV[i]; j < newV[i + 1]; ++j) {
-                if (newW[j] == NO_EDGE)
-                    break;
-                newk[i] += newW[j];
-            }
-        }
-
-        newac = newk;
-
-        for (int i = 0; i < finalC.size(); ++i) {
+        for (int i = 0; i < initialN; ++i) {
             finalC[i] = newID[C[finalC[i]]] - 1;
         }
         
@@ -466,33 +479,13 @@ int main(int argc, char *argv[]) {
         V = newV;
         N = newN; 
         W = newW;
-        C = newC; 
-        k = newk; 
-        ac = newac;
 
         itr++;
     }
 
 
     if (showAssignment) {
-        vector<pi> finalCPrime;
-        
-        for (int i = 0; i < finalC.size(); ++i) {
-            finalCPrime.push_back(pi(finalC[i], i));
-        }
-        
-        cout << std::set<int>(finalC.begin(), finalC.end()).size();
-        sort(finalCPrime.begin(), finalCPrime.end());
-        
-        int lastC = -1;
-        for (auto& p : finalCPrime) {
-            if (lastC != p.first) {
-                cout << endl << p.first;
-                lastC = p.first;
-            }
-            cout << " " << p.second;
-        }
-        cout << endl;
+        printClustering(initialN, finalC);
     }
     return 0;
 }
