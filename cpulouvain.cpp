@@ -8,6 +8,9 @@
 #include <cassert> 
 #include <chrono> 
 
+//ASSUMPTIONS 
+// there is at least one edge with a positive weight
+
 
 // TODO bigger threshold int the first iteration
 // TODO bucket partition
@@ -48,7 +51,7 @@ void printVec(vector<T> v){
 
 template<typename T>
 T sum(vector<T> v) {
-    int sum = 0;
+    T sum = 0;
     for (auto val : v) {
         sum += val;
     }
@@ -57,7 +60,7 @@ T sum(vector<T> v) {
 
 template<typename T>
 T positiveSum(vector<T> v) {
-    int sum = 0;
+    T sum = 0;
     for (auto val : v) {
         if (val > 0) {
             sum += val;
@@ -170,6 +173,7 @@ void readGraphFromFile(const string& matrixFile,
 
 
 void computeMove(int i,
+                    int n,
                     vi& newComm, 
                     const vi& V,
                     const vi& N, 
@@ -195,13 +199,14 @@ void computeMove(int i,
         }
     }
 
-    int maxCj = -1;
+    int maxCj = n;
     float maxDeltaAlmostMod = -1;
 
+
     for (auto const& [cj, wsum] : hashMap) {
-        if (cj < ci) {
             float deltaAlmostMod = wsum / wm 
                 + k[i] * (ac[ci] - k[i] - ac[cj]) / (2 * wm * wm);
+            // cerr << "node: " << i << " to: " << cj << " deltaAlmostMod: " << deltaAlmostMod << endl; 
 
             if (deltaAlmostMod > maxDeltaAlmostMod || deltaAlmostMod == maxDeltaAlmostMod && cj < maxCj) {
                 if (comSize[cj] > 1 || comSize[ci] > 1 || cj < ci) {
@@ -209,10 +214,13 @@ void computeMove(int i,
                     maxDeltaAlmostMod = deltaAlmostMod;
                 }
             }   
-        }
     }
 
+
+    //if not found better move maxDeltaMod will be negative
     float maxDeltaMod = maxDeltaAlmostMod - hashMap[ci] / wm;
+    //cerr << "node: " << i << " to: " << maxCj << " maxDeltaMod: " << maxDeltaMod << " hashMap[ci]: " << hashMap[ci] << endl; 
+
     if (maxDeltaMod > 0) {
         newComm[i] = maxCj;
     } else {
@@ -240,9 +248,7 @@ float calculateModularity(  int n,
             }
         }
     }
-    if (DEBUG) {
-       pvec(ac); 
-    }
+
     for (int i = 0; i < c; ++i) {
         Q -= ac[uniqueC[i]] * ac[uniqueC[i]] / (4 * wm * wm);
     }
@@ -365,6 +371,8 @@ int main(int argc, char *argv[]) {
         k = vf(n, 0);
         initializeK(n, V, W, k);
 
+        dassert(abs(sum(k) - 2 * wm) < 0.0001);
+
         ac = k; 
 
         //modularity optimisation phase
@@ -375,21 +383,24 @@ int main(int argc, char *argv[]) {
         if (DEBUG) {
             cerr << "modularity: " << Qc << endl;
             pvec(C);
+            pvec(k);
+            pvec(ac);
+            pvec(comSize);
         }
         do {
             newComm = C;
             comSize = vi(n, 0); //check if needed
+            initializeComSize(n, C, comSize);
             vi comDegree(n, 0); 
 
             for (int i = 0; i < n; ++i) {
-                computeMove(i, newComm, V, N, W, C, comSize, k, ac, wm);
+                computeMove(i, n, newComm, V, N, W, C, comSize, k, ac, wm);
             }
             
             C = newComm;
 
             ac.assign(n, 0);
             initializeAc(n, C, k, ac);
-            
             dassert(abs(sum(ac) - 2 * wm) < 0.0001);
 
             Qp = Qc;
@@ -399,9 +410,12 @@ int main(int argc, char *argv[]) {
             if (DEBUG) {
                 cerr << "modularity: " << Qc << endl;
                 pvec(C);
+                pvec(k);
+                pvec(ac);
+                pvec(comSize);
             }
 
-        } while (Qc - Qp > threshold);
+        } while (abs(Qc - Qp) > threshold);
 
         //aggregation phase
         comSize = vi(n, 0);
@@ -490,8 +504,6 @@ int main(int argc, char *argv[]) {
         
         if (DEBUG) {
             cerr << "sum of weights: " << positiveSum(W) << endl;
-            pvec(W);
-            pvec(N);
         }
 
         //update graph
@@ -500,7 +512,7 @@ int main(int argc, char *argv[]) {
         V = newV;
         N = newN; 
         W = newW;
-    } while (Qba - Qc > threshold);
+    } while (abs(Qc - Qba)> threshold);
 
     auto endTime = chrono::steady_clock::now();
     
