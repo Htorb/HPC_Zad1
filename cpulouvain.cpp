@@ -5,7 +5,8 @@
 #include <vector>
 #include <map>
 #include <set>
-#include <cassert>  
+#include <cassert> 
+#include <chrono> 
 
 
 // TODO bigger threshold int the first iteration
@@ -13,10 +14,10 @@
 // TODO two hashmaps; hash function
 // TODO how can update modularity
 #define dassert(a) \
-    if ((debug)) assert((a));
+    if ((DEBUG)) assert((a));
 
 #define pvec(a) \
-    do { std::cout << #a << ": "; printVec((a)) ; } while(false)
+    do { std::cerr << #a << ": "; printVec((a)) ; } while(false)
 
 using namespace std;
 
@@ -24,18 +25,19 @@ using pi = pair<int, int>;
 using tr = pair<pi, float>;
 using vi = vector<int>;
 using vf = vector<float>;
-using vb = vector<bool>;
 
 
 //float ITR_MODULARITY_THRESHOLD = 0.1;
 float NO_EDGE = -1;
+bool DEBUG = false;
+
 
 template<typename T>
 void head(vector<T> v, int n = 5) {
     for (int i = 0; i < min(n, (int) v.size()); i++) {
-         cout << v[i] << " ";
+         cerr << v[i] << " ";
     }
-    cout << endl;
+    cerr << endl;
 }
 
 template<typename T>
@@ -76,7 +78,6 @@ void cumsum(vector<T>& v) {
 void parseCommandline(bool& showAssignment,
                         float& threshold,
                         string& matrixFile,
-                        bool& debug,
                         int argc,
                         char** argv) {
     int i = 1;
@@ -93,7 +94,7 @@ void parseCommandline(bool& showAssignment,
             i += 1;
         }
         else if (s == "-d") {
-            debug = true;
+            DEBUG = true;
             i += 1;
         } else {
             exit(1);
@@ -174,7 +175,7 @@ void computeMove(int i,
                     const vi& N, 
                     const vf& W, 
                     const vi& C,
-                    const vb& isCommunityByItself, 
+                    const vi& comSize, 
                     const vf& k, 
                     const vf& ac, 
                     const float wm) {
@@ -203,7 +204,7 @@ void computeMove(int i,
                 + k[i] * (ac[ci] - k[i] - ac[cj]) / (2 * wm * wm);
 
             if (deltaAlmostMod > maxDeltaAlmostMod || deltaAlmostMod == maxDeltaAlmostMod && cj < maxCj) {
-                if (!isCommunityByItself[cj] || !isCommunityByItself[ci] || cj < ci) {
+                if (comSize[cj] > 1 || comSize[ci] > 1 || cj < ci) {
                     maxCj = cj;
                     maxDeltaAlmostMod = deltaAlmostMod;
                 }
@@ -221,10 +222,12 @@ void computeMove(int i,
 
 
 float calculateModularity(  int n,
+                            int c,
                             const vi& V,
                             const vi& N, 
                             const vf& W, 
-                            const vi& C, 
+                            const vi& C,
+                            const vi& uniqueC, 
                             const vf& ac, 
                             const float wm) {
     float Q = 0;
@@ -237,8 +240,11 @@ float calculateModularity(  int n,
             }
         }
     }
-    for (int i = 0; i < n; ++i) {
-        Q -= ac[i] * ac[i] / (4 * wm * wm);
+    if (DEBUG) {
+       pvec(ac); 
+    }
+    for (int i = 0; i < c; ++i) {
+        Q -= ac[uniqueC[i]] * ac[uniqueC[i]] / (4 * wm * wm);
     }
     return Q;
 }
@@ -261,15 +267,17 @@ void initializeK(int n, const vi& V, const vf& W, vf& k) {
 
 void initializeAc(int n, const vi& C, const vf& k, vf& ac) {
     for (int i = 0; i < n; ++i) {
-        ac[C[i]] += k[i];
+        ac[C[i]] += k[i]; //attomic add
     }
 }
 
-void initializeIsCommunityByItself(int n, const vi& C, vb& isCommunityByItself) {
-    for (int i = 0; i < n; ++i) {
-        isCommunityByItself[C[i]] = true;
-    }
+void initializeUniqueCAndC(int n, const vi& C, vi& uniqueC, int& c) {
+    uniqueC = C;
+    set<int> s(uniqueC.begin(), uniqueC.end());
+    uniqueC.assign(s.begin(), s.end());
+    c = s.size();
 }
+
 
 void initializeDegree(int n, const vi& V, const vf& W, vi& degree) {
     for (int i = 0; i < n; ++i) {
@@ -283,10 +291,16 @@ void initializeDegree(int n, const vi& V, const vf& W, vi& degree) {
     }
 }
 
-void initializeComSizeAndComDegree(int n, const vi& degree, const vi& C, vi& comSize, vi& comDegree) {
+void initializeComSize(int n, const vi& C, vi& comSize) {
     for (int i = 0; i < n; ++i) {
-        comSize[C[i]] += 1;
-        comDegree[C[i]] += degree[i]; 
+        comSize[C[i]] += 1; //atomic
+    }
+}
+
+
+void initializeComDegree(int n, const vi& degree, const vi& C, vi& comDegree) {
+    for (int i = 0; i < n; ++i) {
+        comDegree[C[i]] += degree[i]; //atomic
     }
 }
 
@@ -300,7 +314,7 @@ void initializeNewID(int n, const vi& C, const vi& comSize, vi& newID) {
 
 void initializeComm(int n, const vi& C, vi& comm, vi& vertexStart) {
     for (int i = 0; i < n; ++i) {
-        vertexStart[C[i]] -= 1; //in paper is add
+        vertexStart[C[i]] -= 1; //in paper is add, atomic
         int res = vertexStart[C[i]];
         comm[res] = i; 
     }
@@ -311,7 +325,6 @@ int main(int argc, char *argv[]) {
     bool showAssignment = false;
     float threshold = 0;
     string matrixFile;
-    bool debug = false;
 
     //graph vars
     int n; //number vertices 
@@ -323,14 +336,20 @@ int main(int argc, char *argv[]) {
     vi C; //current clustering
     vf k; //sum of vertex's edges
     vf ac; //sum of cluster edges
-    vb isCommunityByItself; 
+    int c; //number of communities
+    vi uniqueC; //list of unique communities ids
+    vi comSize; //size of ech community
 
     int initialN; //number of vertices in the first iteration
     vi finalC; //final clustering result 
 
-   
-    parseCommandline(showAssignment, threshold, matrixFile, debug, argc, argv);
+    float Qba, Qp, Qc; //modularity before outermostloop iteration, before and after modularity optimisation respectively
+    
+
+
+    parseCommandline(showAssignment, threshold, matrixFile, argc, argv);
     readGraphFromFile(matrixFile, n, m, V, N, W);
+    auto startTime = chrono::steady_clock::now();
 
     initialN = n;
     wm = sum(W) / 2;
@@ -339,8 +358,7 @@ int main(int argc, char *argv[]) {
     initializeCommunities(initialN, finalC);
 
     vi newComm;
-    int itr = 0;
-    while (itr < 2) { //TODO change loop condition
+    do { 
         C = vi(n, 0);
         initializeCommunities(n, C);
 
@@ -350,47 +368,50 @@ int main(int argc, char *argv[]) {
         ac = k; 
 
         //modularity optimisation phase
-        float Qp;
-        float Qc = calculateModularity(n, V, N, W, C, ac, wm);
-        cout << wm << endl;
+        initializeUniqueCAndC(n, C, uniqueC, c);
+        Qc = calculateModularity(n, c, V, N, W, C, uniqueC, ac, wm);
+        Qba = Qc;
 
-        if (debug) {
-            cout << "modularity: " << Qc << endl;
+        if (DEBUG) {
+            cerr << "modularity: " << Qc << endl;
             pvec(C);
         }
         do {
             newComm = C;
-            isCommunityByItself = vb(n, false);
-            initializeIsCommunityByItself(n, C, isCommunityByItself);
+            comSize = vi(n, 0); //check if needed
+            vi comDegree(n, 0); 
 
             for (int i = 0; i < n; ++i) {
-                computeMove(i, newComm, V, N, W, C, isCommunityByItself, k, ac, wm);
+                computeMove(i, newComm, V, N, W, C, comSize, k, ac, wm);
             }
-
+            
             C = newComm;
+
             ac.assign(n, 0);
             initializeAc(n, C, k, ac);
             
             dassert(abs(sum(ac) - 2 * wm) < 0.0001);
 
             Qp = Qc;
-            Qc = calculateModularity(n, V, N, W, C, ac, wm);
+            initializeUniqueCAndC(n, C, uniqueC, c);
+            Qc = calculateModularity(n, c, V, N, W, C, uniqueC, ac, wm);
 
-            if (debug) {
-                cout << "modularity: " << Qc << endl;
+            if (DEBUG) {
+                cerr << "modularity: " << Qc << endl;
                 pvec(C);
             }
 
         } while (Qc - Qp > threshold);
 
         //aggregation phase
-        vi comSize(n, 0);
+        comSize = vi(n, 0);
         vi comDegree(n, 0);
 
         vi degree(n, 0);
         initializeDegree(n, V, W, degree);
 
-        initializeComSizeAndComDegree(n, degree, C, comSize, comDegree);
+        initializeComSize(n, C, comSize);
+        initializeComDegree(n, degree, C, comDegree);
 
         vi newID(n, 0);
 
@@ -467,8 +488,8 @@ int main(int argc, char *argv[]) {
             finalC[i] = newID[C[finalC[i]]] - 1;
         }
         
-        if (debug) {
-            cout << "sum of weights:" << positiveSum(W) << endl;
+        if (DEBUG) {
+            cerr << "sum of weights: " << positiveSum(W) << endl;
             pvec(W);
             pvec(N);
         }
@@ -479,9 +500,14 @@ int main(int argc, char *argv[]) {
         V = newV;
         N = newN; 
         W = newW;
+    } while (Qba - Qc > threshold);
 
-        itr++;
-    }
+    auto endTime = chrono::steady_clock::now();
+    
+    // Store the time difference between start and end
+    cout << Qc << endl;
+    auto diffTime = endTime - startTime;
+    cout << chrono::duration <double, milli> (diffTime).count() << " ms" << endl;
 
 
     if (showAssignment) {
