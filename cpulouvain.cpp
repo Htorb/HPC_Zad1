@@ -517,7 +517,7 @@ int main(int argc, char *argv[]) {
     auto endTime = chrono::steady_clock::now();
     
     // Store the time difference between start and end
-    cout << Qc << endl;
+    cout << fixed << Qc << endl;
     auto diffTime = endTime - startTime;
     cout << chrono::duration <double, milli> (diffTime).count() << " ms" << endl;
 
