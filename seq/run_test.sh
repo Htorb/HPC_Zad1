@@ -5,7 +5,7 @@ Off='\033[0m'             # Text Reset
 
 make clean
 make
-for TEST_PATH in ./test/*.in;  do
+for TEST_PATH in ../test/*.in;  do
     NAME=${TEST_PATH%.*}
     OUT=$NAME.out
     M_OUT=$NAME.m_out

@@ -5,5 +5,5 @@ cpulouvain: cpulouvain.cpp
 	$(CC) $(CFLAGS) $^ -o $@
 
 clean:
-	rm cpulouvain
+	rm louvain
 
