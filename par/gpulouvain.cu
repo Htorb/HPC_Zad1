@@ -7,6 +7,8 @@
 #include <set>
 #include <cassert> 
 #include <chrono> 
+#include "helpers.h"
+
 
 //ASSUMPTIONS 
 // there is at least one edge with a positive weight
@@ -354,11 +356,16 @@ int main(int argc, char *argv[]) {
 
     float Qba, Qp, Qc; //modularity before outermostloop iteration, before and after modularity optimisation respectively
     
+    cudaEvent_t startTime, stopTime;
+    float elapsedTime;
 
 
     parseCommandline(showAssignment, threshold, matrixFile, argc, argv);
     readGraphFromFile(matrixFile, n, m, V, N, W);
-    auto startTime = chrono::steady_clock::now();
+
+    HANDLE_ERROR(cudaEventCreate(&startTime));
+    HANDLE_ERROR(cudaEventCreate(&stopTime));
+    HANDLE_ERROR(cudaEventRecord(startTime, 0));
 
     initialN = n;
     wm = sum(W) / 2;
@@ -383,8 +390,8 @@ int main(int argc, char *argv[]) {
         Qc = calculateModularity(n, c, V, N, W, C, uniqueC, ac, wm);
         Qba = Qc;
 
+        cerr << "modularity: " << Qc << endl;
         if (DEBUG) {
-            cerr << "modularity: " << Qc << endl;
             pvec(C);
             pvec(k);
             pvec(ac);
@@ -409,9 +416,9 @@ int main(int argc, char *argv[]) {
             Qp = Qc;
             initializeUniqueCAndC(n, C, uniqueC, c);
             Qc = calculateModularity(n, c, V, N, W, C, uniqueC, ac, wm);
-
+            
+            cerr << "modularity: " << Qc << endl;
             if (DEBUG) {
-                cerr << "modularity: " << Qc << endl;
                 pvec(C);
                 pvec(k);
                 pvec(ac);
@@ -525,8 +532,12 @@ int main(int argc, char *argv[]) {
     
     // Store the time difference between start and end
     cout << fixed << Qc << endl;
-    auto diffTime = endTime - startTime;
-    cout << chrono::duration <double, milli> (diffTime).count() << " ms" << endl;
+    HANDLE_ERROR(cudaEventRecord(stopTime, 0));
+    HANDLE_ERROR(cudaEventSynchronize(stopTime));
+    HANDLE_ERROR(cudaEventElapsedTime(&elapsedTime, startTime, stopTime));
+    printf("%3.1f ms\n", elapsedTime);
+    HANDLE_ERROR(cudaEventDestroy(startTime));
+    HANDLE_ERROR(cudaEventDestroy(stopTime));
 
 
     if (showAssignment) {

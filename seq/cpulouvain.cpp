@@ -380,12 +380,15 @@ int main(int argc, char *argv[]) {
         Qc = calculateModularity(n, c, V, N, W, C, uniqueC, ac, wm);
         Qba = Qc;
 
+        cerr << "modularity: " << Qc << endl;
         if (DEBUG) {
-            cerr << "modularity: " << Qc << endl;
+            cerr << "-----------------------------------------" << endl;
+            pvec(W);
             pvec(C);
             pvec(k);
             pvec(ac);
             pvec(comSize);
+            cerr << "-----------------------------------------" << endl;
         }
         do {
             newComm = C;
@@ -407,12 +410,15 @@ int main(int argc, char *argv[]) {
             initializeUniqueCAndC(n, C, uniqueC, c);
             Qc = calculateModularity(n, c, V, N, W, C, uniqueC, ac, wm);
 
+            cerr << "modularity: " << Qc << endl;
             if (DEBUG) {
-                cerr << "modularity: " << Qc << endl;
+                cerr << "-----------------------------------------" << endl;
+                pvec(W);
                 pvec(C);
                 pvec(k);
                 pvec(ac);
                 pvec(comSize);
+                cerr << "-----------------------------------------" << endl;
             }
 
         } while (abs(Qc - Qp) > threshold);
@@ -467,6 +473,7 @@ int main(int argc, char *argv[]) {
         for (int idx = 0; idx < n; ++idx) {
             int i = comm[idx];
             int ci = C[i];
+
             if (oldc != ci) {
                 int edgeId = newV[newID[oldc] - 1];
                 for (auto const& [cj, wsum] : hashMap) {
@@ -474,7 +481,7 @@ int main(int argc, char *argv[]) {
                     newW[edgeId] = wsum;
                     edgeId++;
                 }
-                oldc = C[comm[idx]];
+                oldc = ci;
                 hashMap.clear();
             } 
             
@@ -485,6 +492,7 @@ int main(int argc, char *argv[]) {
                 if (hashMap.count(cj) == 0) {
                     hashMap[cj] = 0;
                 }
+                //cerr << "wierzcholek " << i << " dodaje do krawedzi " << ci << " " << cj << " wage " << W[j] << endl;
                 hashMap[cj] += W[j];
             }
             
