@@ -10,6 +10,10 @@
 #include "helpers.h"
 #include <thrust/host_vector.h>
 #include <thrust/device_vector.h>
+#include <thrust/sequence.h>
+#include <thrust/device_ptr.h>
+
+
 
 
 //ASSUMPTIONS 
@@ -26,17 +30,49 @@
 #define pvec(a) \
     do { std::cerr << #a << ": "; printVec((a)) ; } while(false)
 
+#define ptr(a) \
+    thrust::raw_pointer_cast((a).data())
+
+#define TODEVICE \
+    dV = V; \
+    dN = N; \
+    dW = W; \
+    dC = C; \
+    dk = k; \
+    dac = ac; \
+    duniqueC = uniqueC; \
+    dcomSize = comSize; \
+    dfinalC = finalC; 
+
+#define TOHOST \
+    V = dV; \
+    N = dN; \
+    W = dW; \
+    C = dC; \
+    k = dk; \
+    ac = dac; \
+    uniqueC = duniqueC; \
+    comSize = dcomSize; \
+    finalC = dfinalC; 
+
+#define NO_EDGE -1
+
+
 using namespace std;
 
 using pi = pair<int, int>;
 using tr = pair<pi, float>;
-using vi = thrust::host_vector<int>;
-using vf = thrust::host_vector<float>;
+using hvi = thrust::host_vector<int>;
+using hvf = thrust::host_vector<float>;
+using dvi = thrust::device_vector<int>;
+using dvf = thrust::device_vector<float>;
+
 
 
 //float ITR_MODULARITY_THRESHOLD = 0.1;
-float NO_EDGE = -1;
 bool DEBUG = false;
+int BLOCKS_NUMBER = 16;
+int THREADS_PER_BLOCK = 128;
 
 
 template<typename T>
@@ -109,7 +145,7 @@ void parseCommandline(bool& showAssignment,
     }
 }
 
-void printClustering(int initialN, const vi& finalC) {
+void printClustering(int initialN, const hvi& finalC) {
     vector<pi> finalCPrime;
     for (int i = 0; i < initialN; ++i) {
         finalCPrime.push_back(pi(finalC[i], i));
@@ -132,9 +168,9 @@ void printClustering(int initialN, const vi& finalC) {
 void readGraphFromFile(const string& matrixFile, 
                         int& n,
                         int& m,
-                        vi& V, 
-                        vi& N,
-                        vf& W) {
+                        hvi& V, 
+                        hvi& N,
+                        hvf& W) {
     ifstream matrixStream;
     matrixStream.open(matrixFile);
     int entries = 0;
@@ -158,9 +194,9 @@ void readGraphFromFile(const string& matrixFile,
 
     sort(tmp.begin(), tmp.end());
 
-    V = vi(n + 1, 0);
-    N = vi(m, 0);
-    W = vf(m, 0);
+    V = hvi(n + 1, 0);
+    N = hvi(m, 0);
+    W = hvf(m, 0);
 
     int v_idx = 0;
     for (size_t i = 0; i < tmp.size(); i++) {
@@ -178,14 +214,14 @@ void readGraphFromFile(const string& matrixFile,
 
 void computeMove(int i,
                     int n,
-                    vi& newComm, 
-                    const vi& V,
-                    const vi& N, 
-                    const vf& W, 
-                    const vi& C,
-                    const vi& comSize, 
-                    const vf& k, 
-                    const vf& ac, 
+                    hvi& newComm, 
+                    const hvi& V,
+                    const hvi& N, 
+                    const hvf& W, 
+                    const hvi& C,
+                    const hvi& comSize, 
+                    const hvf& k, 
+                    const hvf& ac, 
                     const float wm) {
     map<int, float> hashMap;
     int ci = C[i];
@@ -238,12 +274,12 @@ void computeMove(int i,
 
 float calculateModularity(  int n,
                             int c,
-                            const vi& V,
-                            const vi& N, 
-                            const vf& W, 
-                            const vi& C,
-                            const vi& uniqueC, 
-                            const vf& ac, 
+                            const hvi& V,
+                            const hvi& N, 
+                            const hvf& W, 
+                            const hvi& C,
+                            const hvi& uniqueC, 
+                            const hvf& ac, 
                             const float wm) {
     float Q = 0;
     for (int i = 0; i < n; ++i) {
@@ -262,29 +298,29 @@ float calculateModularity(  int n,
     return Q;
 }
 
-void initializeCommunities(int n, vi& C) {
+void initializeCommunities(int n, hvi& C) {
     for (int i = 0; i < n; ++i) {
             C[i] = i;
     }
 }
 
-void initializeK(int n, const vi& V, const vf& W, vf& k) {
-    for (int i = 0; i < n; ++i) {
+__global__ void initializeK(int n, const int* V, const float* W, float* k) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x) {
         for (int j = V[i]; j < V[i + 1]; ++j) {
             if (W[j] == NO_EDGE)
                 break;
             k[i] += W[j];
-        }
+        } 
     }
 }
 
-void initializeAc(int n, const vi& C, const vf& k, vf& ac) {
+void initializeAc(int n, const hvi& C, const hvf& k, hvf& ac) {
     for (int i = 0; i < n; ++i) {
         ac[C[i]] += k[i]; //attomic add
     }
 }
 
-void initializeUniqueCAndC(int n, const vi& C, vi& uniqueC, int& c) {
+void initializeUniqueCAndC(int n, const hvi& C, hvi& uniqueC, int& c) {
     uniqueC = C;
     set<int> s(uniqueC.begin(), uniqueC.end());
     uniqueC.assign(s.begin(), s.end());
@@ -292,7 +328,7 @@ void initializeUniqueCAndC(int n, const vi& C, vi& uniqueC, int& c) {
 }
 
 
-void initializeDegree(int n, const vi& V, const vf& W, vi& degree) {
+void initializeDegree(int n, const hvi& V, const hvf& W, hvi& degree) {
     for (int i = 0; i < n; ++i) {
         int ctr = 0;
         for (int j = V[i]; j < V[i + 1]; ++j) {
@@ -304,20 +340,20 @@ void initializeDegree(int n, const vi& V, const vf& W, vi& degree) {
     }
 }
 
-void initializeComSize(int n, const vi& C, vi& comSize) {
+void initializeComSize(int n, const hvi& C, hvi& comSize) {
     for (int i = 0; i < n; ++i) {
         comSize[C[i]] += 1; //atomic
     }
 }
 
 
-void initializeComDegree(int n, const vi& degree, const vi& C, vi& comDegree) {
+void initializeComDegree(int n, const hvi& degree, const hvi& C, hvi& comDegree) {
     for (int i = 0; i < n; ++i) {
         comDegree[C[i]] += degree[i]; //atomic
     }
 }
 
-void initializeNewID(int n, const vi& C, const vi& comSize, vi& newID) {
+void initializeNewID(int n, const hvi& C, const hvi& comSize, hvi& newID) {
     for (int i = 0; i < n; ++i) {
         if (comSize[C[i]] != 0) {
             newID[C[i]] = 1;
@@ -325,7 +361,7 @@ void initializeNewID(int n, const vi& C, const vi& comSize, vi& newID) {
     }
 }
 
-void initializeComm(int n, const vi& C, vi& comm, vi& vertexStart) {
+void initializeComm(int n, const hvi& C, hvi& comm, hvi& vertexStart) {
     for (int i = 0; i < n; ++i) {
         vertexStart[C[i]] -= 1; //in paper is add, atomic
         int res = vertexStart[C[i]];
@@ -339,22 +375,34 @@ int main(int argc, char *argv[]) {
     float threshold = 0;
     string matrixFile;
 
-    //graph vars
+    //graph vars host
     int n; //number vertices 
     int m; //number of edges
-    vi V; //vertices
-    vi N; //neighbours
-    vf W; //weights
+    hvi V; //vertices
+    hvi N; //neighbours
+    hvf W; //weights
     float wm; //sum of weights
-    vi C; //current clustering
-    vf k; //sum of vertex's edges
-    vf ac; //sum of cluster edges
+    hvi C; //current clustering
+    hvf k; //sum of vertex's edges
+    hvf ac; //sum of cluster edges
     int c; //number of communities
-    vi uniqueC; //list of unique communities ids
-    vi comSize; //size of ech community
+    hvi uniqueC; //list of unique communities ids
+    hvi comSize; //size of ech community
+    
 
     int initialN; //number of vertices in the first iteration
-    vi finalC; //final clustering result 
+    hvi finalC; //final clustering result 
+
+    //graph vars device
+    dvi dV; 
+    dvi dN; 
+    dvf dW;
+    dvi dC; 
+    dvf dk; 
+    dvf dac;
+    dvi duniqueC; 
+    dvi dcomSize; 
+    dvi dfinalC; 
 
     float Qba, Qp, Qc; //modularity before outermostloop iteration, before and after modularity optimisation respectively
     
@@ -372,17 +420,30 @@ int main(int argc, char *argv[]) {
     initialN = n;
     wm = sum(W) / 2;
 
-    finalC = vi(n, 0);
+    finalC = hvi(n, 0);
     initializeCommunities(initialN, finalC);
 
-    vi newComm;
+    hvi newComm;
+
     do { 
-        C = vi(n, 0);
-        initializeCommunities(n, C);
+        TODEVICE
+        dC = dvi(n, 0);
+        thrust::sequence(dC.begin(), dC.end());
 
-        k = vf(n, 0);
-        initializeK(n, V, W, k);
+        dk = dvf(n, 0);
+        initializeK<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, 
+                                                          ptr(dV), 
+                                                          ptr(dW), 
+                                                          ptr(dk)); //25% slower than cpu version
 
+
+        for (int i = 0; i < dk.size(); i++) {
+            cerr << dk[i] << " ";
+        }
+        cerr << endl;
+        TOHOST
+        
+        pvec(k);
         dassert(abs(sum(k) - 2 * wm) < 0.0001);
 
         ac = k; 
@@ -401,9 +462,9 @@ int main(int argc, char *argv[]) {
         }
         do {
             newComm = C;
-            comSize = vi(n, 0); //check if needed
+            comSize = hvi(n, 0); //check if needed
             initializeComSize(n, C, comSize);
-            vi comDegree(n, 0); 
+            hvi comDegree(n, 0); 
 
             for (int i = 0; i < n; ++i) {
                 computeMove(i, n, newComm, V, N, W, C, comSize, k, ac, wm);
@@ -430,28 +491,28 @@ int main(int argc, char *argv[]) {
         } while (abs(Qc - Qp) > threshold);
 
         //aggregation phase
-        comSize = vi(n, 0);
-        vi comDegree(n, 0);
+        comSize = hvi(n, 0);
+        hvi comDegree(n, 0);
 
-        vi degree(n, 0);
+        hvi degree(n, 0);
         initializeDegree(n, V, W, degree);
 
         initializeComSize(n, C, comSize);
         initializeComDegree(n, degree, C, comDegree);
 
-        vi newID(n, 0);
+        hvi newID(n, 0);
 
         initializeNewID(n, C, comSize, newID);
        
         cumsum(newID);
 
-        vi edgePos = comDegree;
+        hvi edgePos = comDegree;
         cumsum(edgePos);
 
-        vi vertexStart = comSize;
+        hvi vertexStart = comSize;
         cumsum(vertexStart);
 
-        vi comm(n, 0);
+        hvi comm(n, 0);
         initializeComm(n, C, comm, vertexStart);
 
          
@@ -459,20 +520,20 @@ int main(int argc, char *argv[]) {
         //new graph
         int newn; 
         int newm; 
-        vi newV;
-        vi newN; 
-        vf newW;
+        hvi newV;
+        hvi newN; 
+        hvf newW;
 
         newn = newID.back();
         newm = edgePos.back();
 
-        newV = vi(newn + 1, 0);
+        newV = hvi(newn + 1, 0);
         for (int i = 0; i < n; ++i) {
             newV[newID[C[i]]] = edgePos[C[i]];
         }
 
-        newN = vi(newm, -1);
-        newW = vf(newm, NO_EDGE);
+        newN = hvi(newm, -1);
+        newW = hvf(newm, NO_EDGE);
 
         map<int, float> hashMap;
         int oldc = C[comm[0]]; //can be n = 0?
