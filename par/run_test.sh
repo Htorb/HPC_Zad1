@@ -14,7 +14,8 @@ for TEST_PATH in ../test/*.in;  do
     
 	
     OUT_VAL=$(head -n 1 $OUT) 
-    M_OUT_VAL=$(head -n 1 $M_OUT) 
+    M_OUT_VAL=$(head -n 1 $M_OUT)
+    M_OUT_TIME=$(head -n 2 $M_OUT | tail -1)  
 
 
 
@@ -27,6 +28,7 @@ for TEST_PATH in ../test/*.in;  do
     if (( $(echo "0.001 > $DIFF" |bc -l) )); 
     then
         echo -e "$Off $BGreen Test passed:  $NAME $Off"
+	echo -e "	execution time: $M_OUT_TIME"
     else
         echo -e "$Off $BRed Test failed:  $NAME $Off"
 

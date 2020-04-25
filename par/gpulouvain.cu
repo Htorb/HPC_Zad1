@@ -8,6 +8,8 @@
 #include <cassert> 
 #include <chrono> 
 #include "helpers.h"
+#include <thrust/host_vector.h>
+#include <thrust/device_vector.h>
 
 
 //ASSUMPTIONS 
@@ -28,8 +30,8 @@ using namespace std;
 
 using pi = pair<int, int>;
 using tr = pair<pi, float>;
-using vi = vector<int>;
-using vf = vector<float>;
+using vi = thrust::host_vector<int>;
+using vf = thrust::host_vector<float>;
 
 
 //float ITR_MODULARITY_THRESHOLD = 0.1;
@@ -38,7 +40,7 @@ bool DEBUG = false;
 
 
 template<typename T>
-void head(vector<T> v, int n = 5) {
+void head(thrust::host_vector<T> v, int n = 5) {
     for (int i = 0; i < min(n, (int) v.size()); i++) {
          cerr << v[i] << " ";
     }
@@ -46,13 +48,13 @@ void head(vector<T> v, int n = 5) {
 }
 
 template<typename T>
-void printVec(vector<T> v){
+void printVec(thrust::host_vector<T> v){
     head(v, v.size());
 }
 
 
 template<typename T>
-T sum(vector<T> v) {
+T sum(thrust::host_vector<T> v) {
     T sum = 0;
     for (auto val : v) {
         sum += val;
@@ -61,7 +63,7 @@ T sum(vector<T> v) {
 }
 
 template<typename T>
-T positiveSum(vector<T> v) {
+T positiveSum(thrust::host_vector<T> v) {
     T sum = 0;
     for (auto val : v) {
         if (val > 0) {
@@ -72,7 +74,7 @@ T positiveSum(vector<T> v) {
 }
 
 template<typename T>
-void cumsum(vector<T>& v) {
+void cumsum(thrust::host_vector<T>& v) {
     int sum = 0;
     for (size_t i = 0; i < v.size(); ++i) {
         sum += v[i];
