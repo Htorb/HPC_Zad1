@@ -12,6 +12,10 @@
 #include <thrust/device_vector.h>
 #include <thrust/sequence.h>
 #include <thrust/device_ptr.h>
+#include <thrust/sort.h>
+#include <thrust/unique.h>
+
+
 
 
 
@@ -55,8 +59,9 @@
     comSize = dcomSize; \
     finalC = dfinalC; 
 
-#define NO_EDGE -1
-
+#define NO_EDGE 0
+#define BLOCKS_NUMBER 16
+#define THREADS_PER_BLOCK 128
 
 using namespace std;
 
@@ -71,8 +76,7 @@ using dvf = thrust::device_vector<float>;
 
 //float ITR_MODULARITY_THRESHOLD = 0.1;
 bool DEBUG = false;
-int BLOCKS_NUMBER = 16;
-int THREADS_PER_BLOCK = 128;
+
 
 
 template<typename T>
@@ -298,6 +302,46 @@ float calculateModularity(  int n,
     return Q;
 }
 
+//WARNING WORKS ONLY WITH ONE KERNEL
+__global__ void calculateModularityGPU(int n,
+                                        int c,
+                                        int* V,
+                                        int* N, 
+                                        float* W, 
+                                        int* C,
+                                        int* uniqueC, 
+                                        float* ac, 
+                                        const float wm,
+                                        float* Q) {
+    __shared__ float partials[THREADS_PER_BLOCK];
+    int tid = threadIdx.x;
+    int step  = blockDim.x;
+
+    partials[tid] = 0;
+    for (int i = tid; i < n; i += step) {
+        for (int j = V[i]; j < V[i + 1]; ++j) {
+            if (C[N[j]] == C[i]) {
+                partials[tid] += W[j] / (2 * wm);
+            }
+        }
+    }
+    
+    for (int i = tid; i < c; i += step) {
+        partials[tid] -= ac[uniqueC[i]] * ac[uniqueC[i]] / (4 * wm * wm);
+    }
+    __syncthreads();
+
+    for (int s=blockDim.x/2; s>0; s>>=1) {
+        if (tid < s) {
+            partials[tid] += partials[tid + s];
+        }
+        __syncthreads();
+    }
+    if (tid == 0) {
+        Q[0] = partials[0];
+    }
+}
+
 void initializeCommunities(int n, hvi& C) {
     for (int i = 0; i < n; ++i) {
             C[i] = i;
@@ -427,30 +471,45 @@ int main(int argc, char *argv[]) {
 
     do { 
         TODEVICE
-        dC = dvi(n, 0);
-        thrust::sequence(dC.begin(), dC.end());
+        dC = dvi(n, 0);//redundant?
+        thrust::sequence(dC.begin(), dC.end()); //initializeCommunities
 
         dk = dvf(n, 0);
         initializeK<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, 
                                                           ptr(dV), 
                                                           ptr(dW), 
-                                                          ptr(dk)); //25% slower than cpu version
+                                                          ptr(dk)); 
 
-
-        for (int i = 0; i < dk.size(); i++) {
-            cerr << dk[i] << " ";
-        }
-        cerr << endl;
-        TOHOST
         
-        pvec(k);
-        dassert(abs(sum(k) - 2 * wm) < 0.0001);
+        float ksum = thrust::reduce(dk.begin(), dk.end(), (float) 0, thrust::plus<float>());
+        dassert(abs(ksum - 2 * wm) < 0.0001);
 
-        ac = k; 
+        dac = dk; 
+        
 
         //modularity optimisation phase
-        initializeUniqueCAndC(n, C, uniqueC, c);
-        Qc = calculateModularity(n, c, V, N, W, C, uniqueC, ac, wm);
+
+        //initializeUniqueCAndC
+        duniqueC = dC;
+        thrust::sort(duniqueC.begin(), duniqueC.end());
+        thrust::unique(duniqueC.begin(), duniqueC.end());
+        c = duniqueC.size();
+        
+
+        //Qc = calculateModularity(n, c, V, N, W, C, uniqueC, ac, wm);
+        dvf dQ(1);
+        calculateModularityGPU<<<1, THREADS_PER_BLOCK>>>(n,
+                                                        c, 
+                                                        ptr(dV),
+                                                        ptr(dN),
+                                                        ptr(dW),
+                                                        ptr(dC),
+                                                        ptr(duniqueC),
+                                                        ptr(dac),
+                                                        wm,
+                                                        ptr(dQ));
+        Qc = dQ[0];
+        TOHOST
         Qba = Qc;
 
         cerr << "modularity: " << Qc << endl;
