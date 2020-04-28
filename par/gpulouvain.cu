@@ -317,18 +317,18 @@ __global__ void calculateModularityGPU(int n,
     int tid = threadIdx.x;
     int step  = blockDim.x;
 
-    partials[tid] = 0;
+    float a = 0;
     for (int i = tid; i < n; i += step) {
         for (int j = V[i]; j < V[i + 1]; ++j) {
             if (C[N[j]] == C[i]) {
-                partials[tid] += W[j] / (2 * wm);
+                a += W[j] / (2 * wm);
             }
         }
     }
-    
     for (int i = tid; i < c; i += step) {
-        partials[tid] -= ac[uniqueC[i]] * ac[uniqueC[i]] / (4 * wm * wm);
+        a -= ac[uniqueC[i]] * ac[uniqueC[i]] / (4 * wm * wm);
     }
+    partials[tid] = a;
     __syncthreads();
 
     for (int s=blockDim.x/2; s>0; s>>=1) {
@@ -338,7 +338,7 @@ __global__ void calculateModularityGPU(int n,
         __syncthreads();
     }
     if (tid == 0) {
-        Q[0] = partials[0];
+        *Q = partials[0];
     }
 }
 
@@ -371,6 +371,13 @@ void initializeUniqueCAndC(int n, const hvi& C, hvi& uniqueC, int& c) {
     c = s.size();
 }
 
+void initializeUniqueCAndCGPU(int n, const dvi& C, dvi& uniqueC, int& c) {
+    uniqueC = C;
+    thrust::sort(uniqueC.begin(), uniqueC.end());
+    thrust::unique(uniqueC.begin(), uniqueC.end());
+    c = uniqueC.size();
+}
+        
 
 void initializeDegree(int n, const hvi& V, const hvf& W, hvi& degree) {
     for (int i = 0; i < n; ++i) {
@@ -446,7 +453,7 @@ int main(int argc, char *argv[]) {
     dvf dac;
     dvi duniqueC; 
     dvi dcomSize; 
-    dvi dfinalC; 
+    dvi dfinalC;
 
     float Qba, Qp, Qc; //modularity before outermostloop iteration, before and after modularity optimisation respectively
     
@@ -489,15 +496,12 @@ int main(int argc, char *argv[]) {
 
         //modularity optimisation phase
 
-        //initializeUniqueCAndC
-        duniqueC = dC;
-        thrust::sort(duniqueC.begin(), duniqueC.end());
-        thrust::unique(duniqueC.begin(), duniqueC.end());
-        c = duniqueC.size();
-        
+        //
+        initializeUniqueCAndCGPU(n, dC, duniqueC, c);
 
-        //Qc = calculateModularity(n, c, V, N, W, C, uniqueC, ac, wm);
-        dvf dQ(1);
+
+        // Qc = calculateModularity(n, c, V, N, W, C, uniqueC, ac, wm);
+        dvf dQc(1);
         calculateModularityGPU<<<1, THREADS_PER_BLOCK>>>(n,
                                                         c, 
                                                         ptr(dV),
@@ -507,11 +511,13 @@ int main(int argc, char *argv[]) {
                                                         ptr(duniqueC),
                                                         ptr(dac),
                                                         wm,
-                                                        ptr(dQ));
-        Qc = dQ[0];
+                                                        ptr(dQc));
+        Qc = dQc[0];
         TOHOST
+
         Qba = Qc;
 
+        
         cerr << "modularity: " << Qc << endl;
         if (DEBUG) {
             pvec(C);
@@ -660,7 +666,6 @@ int main(int argc, char *argv[]) {
     printf("%3.1f ms\n", elapsedTime);
     HANDLE_ERROR(cudaEventDestroy(startTime));
     HANDLE_ERROR(cudaEventDestroy(stopTime));
-
 
     if (showAssignment) {
         printClustering(initialN, finalC);
