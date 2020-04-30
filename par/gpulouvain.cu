@@ -14,6 +14,8 @@
 #include <thrust/device_ptr.h>
 #include <thrust/sort.h>
 #include <thrust/unique.h>
+#include <thrust/transform.h>
+#include <thrust/functional.h>
 
 
 
@@ -42,6 +44,7 @@
     dN = N; \
     dW = W; \
     dC = C; \
+    dnewComm = newComm; \
     dk = k; \
     dac = ac; \
     duniqueC = uniqueC; \
@@ -53,6 +56,7 @@
     N = dN; \
     W = dW; \
     C = dC; \
+    newComm = dnewComm; \
     k = dk; \
     ac = dac; \
     uniqueC = duniqueC; \
@@ -62,6 +66,7 @@
 #define NO_EDGE 0
 #define BLOCKS_NUMBER 16
 #define THREADS_PER_BLOCK 128
+#define EMPTY_SLOT -1
 
 using namespace std;
 
@@ -216,6 +221,57 @@ void readGraphFromFile(const string& matrixFile,
 }
 
 
+
+
+////////////////////////////////////////////////////////////////////////////////////////////
+struct hashMapSizesGenerator{
+    const float ratio;
+    hashMapSizesGenerator(float _ratio) : ratio(_ratio) {}
+
+    // vector<int> computePrimeNumbers(int upTo) {
+    //     vector<int> primes;
+    //     for (int i = 2; i <= upTo; ++i) {
+    //         bool isPrime = true;
+    //         for (auto p : primes) {
+    //             if (i % p == 0) {
+    //                 isPrime = false;
+    //                 break; 
+    //             }
+    //         }
+    //         if (isPrime) {
+    //             primes.push_back(i);
+    //         }
+    //     }
+    //     return primes;
+    // }
+    __host__ __device__ int operator()(const int &x) const {
+        if (x == 0) return 0;
+        int v = (int) (ratio * (x + 1));
+        v--;
+        v |= v >> 1;
+        v |= v >> 2;
+        v |= v >> 4;
+        v |= v >> 8;
+        v |= v >> 16;
+        v++;
+        return v;
+    }
+};
+
+//size > 1 !!
+int h1(int Ci) {
+    return 7 * Ci + 5;
+}
+
+int h2(int Ci) {
+    return 2 * Ci + 1; 
+}
+int doubleHash(int Ci, int itr, int size) { 
+    return (h1(Ci) + itr * h2(Ci)) % size; //maybe can be improved
+}
+
+
+
 void computeMove(int i,
                     int n,
                     hvi& newComm, 
@@ -226,30 +282,56 @@ void computeMove(int i,
                     const hvi& comSize, 
                     const hvf& k, 
                     const hvf& ac, 
-                    const float wm) {
-    map<int, float> hashMap;
+                    const float wm,
+                    hvi& hashOffset,
+                    hvf& hashWeight,
+                    hvi& hashComm
+                ) {
+    int offset = hashOffset[i];
+    int size = hashOffset[i + 1] - offset;
     int ci = C[i];
+    int itr, pos;
 
-    hashMap[ci] = 0;
+    if (size == 0) {
+        return;
+    }
+
     for (int j = V[i]; j < V[i + 1]; ++j) {
         if (W[j] == NO_EDGE)
             break;
+
         int cj = C[N[j]];
-        if (hashMap.count(cj) == 0) {
-            hashMap[cj] = 0;
-        }
-        if (N[j] != i) {
-            hashMap[cj] += W[j];
-        }
+        itr = 0;
+        do {
+            // cerr << "szukam hasha" << endl;
+            pos = offset + doubleHash(cj, itr, size);
+            // cerr << "znalazlem!" << endl;
+
+            // cerr << "ci: " << ci << " itr: " << " cj: " << cj << " itr: " << itr << " size: " << size << " offset: " << offset << " pos: " << pos << endl;
+
+            if (hashComm[pos] == cj) {
+                if (N[j] != i) {
+                    hashWeight[pos] += W[j]; 
+                }
+            } else if (hashComm[pos] == EMPTY_SLOT) {
+                hashComm[pos] = cj;
+                if (N[j] != i) {
+                    hashWeight[pos] += W[j]; 
+                }
+            }
+            itr++;
+        } while (hashComm[pos] != cj);
     }
 
     int maxCj = n;
     float maxDeltaAlmostMod = -1;
 
-
-    for (auto it = hashMap.begin(); it != hashMap.end(); it++ ) {
-        float cj = it->first;
-        float wsum = it->second;
+    for (pos = offset; pos < offset + size; pos++) {
+        // cerr << "kurdebele" << endl;
+        int cj = hashComm[pos];
+        if (cj == EMPTY_SLOT)
+            continue;
+        float wsum = hashWeight[pos];
 
         float deltaAlmostMod = wsum / wm 
             + k[i] * (ac[ci] - k[i] - ac[cj]) / (2 * wm * wm);
@@ -263,17 +345,29 @@ void computeMove(int i,
         }   
     }
 
+    itr = 0;
+    do {    
+        // cerr << "szukam hasha" << endl;
+        pos = offset + doubleHash(ci, itr, size);
+        // cerr << "znalazlem!" << endl;
+        // cerr << "ci: " << ci << " size: " << size << " itr: " << itr << " pos: " << pos << " hashComm[pos]: " << hashComm[pos] << endl; 
+
+        itr++;
+    } while (hashComm[pos] != ci && hashComm[pos] != EMPTY_SLOT);
 
     //if not found better move maxDeltaMod will be negative
-    float maxDeltaMod = maxDeltaAlmostMod - hashMap[ci] / wm;
+    float maxDeltaMod = maxDeltaAlmostMod - hashWeight[pos] / wm;
     //cerr << "node: " << i << " to: " << maxCj << " maxDeltaMod: " << maxDeltaMod << " hashMap[ci]: " << hashMap[ci] << endl; 
+    // cerr << "eeee" << endl;
 
     if (maxDeltaMod > 0) {
         newComm[i] = maxCj;
     } else {
         newComm[i] = ci;
     }
+    // cerr << "elko" << endl;
 }
+
 
 
 float calculateModularity(  int n,
@@ -391,9 +485,28 @@ void initializeDegree(int n, const hvi& V, const hvf& W, hvi& degree) {
     }
 }
 
+__global__ void initializeDegreeGPU(int n, int* V, float* W, int* degree) {
+    for (int i = 0; i < n; ++i) {
+        int ctr = 0;
+        for (int j = V[i]; j < V[i + 1]; ++j) {
+            if (W[j] == NO_EDGE)
+                break;
+            ctr++;
+        }
+        degree[i] = ctr;
+    }
+}
+
+
 void initializeComSize(int n, const hvi& C, hvi& comSize) {
     for (int i = 0; i < n; ++i) {
         comSize[C[i]] += 1; //atomic
+    }
+}
+
+__global__ void initializeComSizeGPU(int n, int* C, int* comSize) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x) {
+        atomicAdd(&comSize[C[i]], 1);
     }
 }
 
@@ -434,11 +547,14 @@ int main(int argc, char *argv[]) {
     hvf W; //weights
     float wm; //sum of weights
     hvi C; //current clustering
+    hvi newComm; //temporary array to store new communities
     hvf k; //sum of vertex's edges
     hvf ac; //sum of cluster edges
     int c; //number of communities
     hvi uniqueC; //list of unique communities ids
     hvi comSize; //size of ech community
+    hvi degree; //degree of each vertex
+
     
 
     int initialN; //number of vertices in the first iteration
@@ -449,11 +565,15 @@ int main(int argc, char *argv[]) {
     dvi dN; 
     dvf dW;
     dvi dC; 
+    dvi dnewComm;
     dvf dk; 
     dvf dac;
     dvi duniqueC; 
     dvi dcomSize; 
     dvi dfinalC;
+    dvi ddegree;
+
+
 
     float Qba, Qp, Qc; //modularity before outermostloop iteration, before and after modularity optimisation respectively
     
@@ -473,8 +593,6 @@ int main(int argc, char *argv[]) {
 
     finalC = hvi(n, 0);
     initializeCommunities(initialN, finalC);
-
-    hvi newComm;
 
     do { 
         TODEVICE
@@ -513,8 +631,6 @@ int main(int argc, char *argv[]) {
                                                         wm,
                                                         ptr(dQc));
         Qc = dQc[0];
-        TOHOST
-
         Qba = Qc;
 
         
@@ -525,16 +641,35 @@ int main(int argc, char *argv[]) {
             pvec(ac);
             pvec(comSize);
         }
+        TOHOST
         do {
-            newComm = C;
-            comSize = hvi(n, 0); //check if needed
-            initializeComSize(n, C, comSize);
-            hvi comDegree(n, 0); 
+            TODEVICE
+            dnewComm = dC;
+            dcomSize = dvi(n, 0);
+            initializeComSizeGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(dC), ptr(dcomSize));
+            ddegree = dvi(n, 0);
+            initializeDegreeGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(dV), ptr(dW), ptr(ddegree));
 
-            for (int i = 0; i < n; ++i) {
-                computeMove(i, n, newComm, V, N, W, C, comSize, k, ac, wm);
-            }
             
+            
+            hashMapSizesGenerator getHashMapSize(1.5);
+            dvi dhashSize = dvi(n);
+            thrust::transform(ddegree.begin(), ddegree.end(), dhashSize.begin(), getHashMapSize);
+            
+            dvi dhashOffset = dvi(n + 1);
+            dhashOffset[0] = 0;
+            thrust::inclusive_scan(dhashSize.begin(), dhashSize.end(), dhashOffset.begin() + 1);
+
+            dvf dhashWeight(dhashOffset.back(), 0);
+            dvi dhashComm(dhashOffset.back(), EMPTY_SLOT);
+
+            TOHOST
+            hvi hashOffset = dhashOffset;
+            hvf hashWeight = dhashWeight;
+            hvi hashComm = dhashComm;
+            for (int i = 0; i < n; ++i) {
+                computeMove(i, n, newComm, V, N, W, C, comSize, k, ac, wm, hashOffset, hashWeight, hashComm);
+            }
             C = newComm;
 
             ac.assign(n, 0);
@@ -559,7 +694,7 @@ int main(int argc, char *argv[]) {
         comSize = hvi(n, 0);
         hvi comDegree(n, 0);
 
-        hvi degree(n, 0);
+        degree = hvi(n, 0); //check if needed
         initializeDegree(n, V, W, degree);
 
         initializeComSize(n, C, comSize);
