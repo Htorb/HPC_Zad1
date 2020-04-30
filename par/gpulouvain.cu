@@ -271,7 +271,6 @@ int doubleHash(int Ci, int itr, int size) {
 }
 
 
-
 void computeMove(int i,
                     int n,
                     hvi& newComm, 
@@ -370,6 +369,131 @@ void computeMove(int i,
 
 
 
+
+  
+__device__ void modularityArgMax(int* maxCj, float* maxDeltaAlmostMod, int pos, int i, int ci, float* hashWeight, int* hashComm, float* k, float* ac, int* comSize, float wm) {
+    int cj = hashComm[pos];
+    float wsum = hashWeight[pos];
+ 
+    float deltaAlmostMod = wsum / wm 
+    + k[i] * (ac[ci] - k[i] - ac[cj]) / (2 * wm * wm);
+
+
+    if (deltaAlmostMod > *maxDeltaAlmostMod || deltaAlmostMod == *maxDeltaAlmostMod && cj < *maxCj) {
+        if (comSize[cj] > 1 || comSize[ci] > 1 || cj < ci) {
+            *maxCj = cj;
+            *maxDeltaAlmostMod = deltaAlmostMod;
+        }
+    } 
+}
+
+__global__ void computeMoveGPU(int n,
+                                int* newComm, 
+                                int* V,
+                                int* N, 
+                                float* W, 
+                                int* C,
+                                int* comSize, 
+                                float* k, 
+                                float* ac, 
+                                const float wm,
+                                int* hashOffset,
+                                float* hashWeight,
+                                int* hashComm) {
+    __shared__ int partials[THREADS_PER_BLOCK];    
+    for (int i = blockIdx.x; i < n; i += gridDim.x) {
+        int tid = threadIdx.x;
+        int step = blockDim.x;
+        int offset = hashOffset[i];
+        int size = hashOffset[i + 1] - offset;
+        int ci = C[i];
+        int itr, pos;
+
+        if (size == 0) {
+            continue;
+        }
+
+        for (int j = tid + V[i]; j < V[i + 1]; j += step) {
+            if (W[j] == NO_EDGE)
+                break;
+
+            int cj = C[N[j]];
+            itr = 0;
+            do {
+                // cerr << "szukam hasha" << endl;
+                pos = offset + doubleHash(cj, itr, size);
+                // cerr << "znalazlem!" << endl;
+
+                // cerr << "ci: " << ci << " itr: " << " cj: " << cj << " itr: " << itr << " size: " << size << " offset: " << offset << " pos: " << pos << endl;
+
+                if (hashComm[pos] == cj) {
+                    if (N[j] != i) {
+                        atomicAdd(&hashWeight[pos], W[j]); 
+                    }
+                } else if (hashComm[pos] == EMPTY_SLOT) {
+                    if (EMPTY_SLOT != atomicCAS(&hashComm[pos], EMPTY_SLOT, cj)) {
+                        if (N[j] != i) {
+                            atomicAdd(&hashWeight[pos], W[j]); 
+                        }
+                    } 
+                    else if (hashComm[pos] == cj) {
+                        if (N[j] != i) {
+                            atomicAdd(&hashWeight[pos], W[j]); 
+                        }
+                    }
+                }
+                itr++;
+            } while (hashComm[pos] != cj);
+        }
+        __syncthreads();
+
+        partialCMax[tid] = n;
+        partialDeltaAlmostMod[tid] = -1;
+        for (int j = offset + tid; j < offset + size; j += step) {
+            if (hashComm[j] == EMPTY_SLOT)
+                continue;
+            modularityArgMax(&partialCMax[tid], &partialDeltaAlmostMod[tid], j, i, ci, hashWeight, hashComm, k, ac, comSize, wm);            
+        }
+        __syncthreads();
+
+        for (int s = blockDim.x / 2; s >0 ; s >>= 1) {
+            if (tid < s) { //TODO
+                if (deltaAlmostMod > *maxDeltaAlmostMod || deltaAlmostMod == *maxDeltaAlmostMod && cj < *maxCj) {
+                    if (comSize[cj] > 1 || comSize[ci] > 1 || cj < ci) {
+                        *maxCj = cj;
+                        *maxDeltaAlmostMod = deltaAlmostMod;
+                    }
+                }   
+            }
+            __syncthreads();
+        }
+
+
+        itr = 0;
+        do {    
+            // cerr << "szukam hasha" << endl;
+            pos = offset + doubleHash(ci, itr, size);
+            // cerr << "znalazlem!" << endl;
+            // cerr << "ci: " << ci << " size: " << size << " itr: " << itr << " pos: " << pos << " hashComm[pos]: " << hashComm[pos] << endl; 
+
+            itr++;
+        } while (hashComm[pos] != ci && hashComm[pos] != EMPTY_SLOT);
+
+        //if not found better move maxDeltaMod will be negative
+        float maxDeltaMod = maxDeltaAlmostMod - hashWeight[pos] / wm;
+        //cerr << "node: " << i << " to: " << maxCj << " maxDeltaMod: " << maxDeltaMod << " hashMap[ci]: " << hashMap[ci] << endl; 
+        // cerr << "eeee" << endl;
+
+        if (maxDeltaMod > 0) {
+            newComm[i] = maxCj;
+        } else {
+            newComm[i] = ci;
+        }
+        __syncthreads();
+    // cerr << "elko" << endl;
+    }
+}
+
 float calculateModularity(  int n,
                             int c,
                             const hvi& V,
@@ -395,6 +519,7 @@ float calculateModularity(  int n,
     }
     return Q;
 }
+
 
 //WARNING WORKS ONLY WITH ONE KERNEL
 __global__ void calculateModularityGPU(int n,
@@ -425,7 +550,7 @@ __global__ void calculateModularityGPU(int n,
     partials[tid] = a;
     __syncthreads();
 
-    for (int s=blockDim.x/2; s>0; s>>=1) {
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
         if (tid < s) {
             partials[tid] += partials[tid + s];
         }
@@ -663,13 +788,24 @@ int main(int argc, char *argv[]) {
             dvf dhashWeight(dhashOffset.back(), 0);
             dvi dhashComm(dhashOffset.back(), EMPTY_SLOT);
 
-            TOHOST
+            
             hvi hashOffset = dhashOffset;
             hvf hashWeight = dhashWeight;
             hvi hashComm = dhashComm;
-            for (int i = 0; i < n; ++i) {
-                computeMove(i, n, newComm, V, N, W, C, comSize, k, ac, wm, hashOffset, hashWeight, hashComm);
-            }
+            computeMoveGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, 
+                                                                 ptr(newComm), 
+                                                                 ptr(V), 
+                                                                 ptr(N), 
+                                                                 ptr(W), 
+                                                                 ptr(C), 
+                                                                 ptr(comSize), 
+                                                                 ptr(k), 
+                                                                 ptr(ac), 
+                                                                 wm, 
+                                                                 ptr(hashOffset), 
+                                                                 ptr(hashWeight), 
+                                                                 ptr(hashComm));
+            TOHOST
             C = newComm;
 
             ac.assign(n, 0);
