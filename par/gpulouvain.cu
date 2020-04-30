@@ -258,15 +258,15 @@ struct hashMapSizesGenerator{
     }
 };
 
-//size > 1 !!
-int h1(int Ci) {
+__host__  __device__ int h1(int Ci) {
     return 7 * Ci + 5;
 }
 
-int h2(int Ci) {
+__host__  __device__ int h2(int Ci) {
     return 2 * Ci + 1; 
 }
-int doubleHash(int Ci, int itr, int size) { 
+//size > 0 !!
+__host__  __device__ int doubleHash(int Ci, int itr, int size) { 
     return (h1(Ci) + itr * h2(Ci)) % size; //maybe can be improved
 }
 
@@ -369,23 +369,14 @@ void computeMove(int i,
 
 
 
-
-  
-__device__ void modularityArgMax(int* maxCj, float* maxDeltaAlmostMod, int pos, int i, int ci, float* hashWeight, int* hashComm, float* k, float* ac, int* comSize, float wm) {
-    int cj = hashComm[pos];
-    float wsum = hashWeight[pos];
- 
-    float deltaAlmostMod = wsum / wm 
-    + k[i] * (ac[ci] - k[i] - ac[cj]) / (2 * wm * wm);
-
-
-    if (deltaAlmostMod > *maxDeltaAlmostMod || deltaAlmostMod == *maxDeltaAlmostMod && cj < *maxCj) {
-        if (comSize[cj] > 1 || comSize[ci] > 1 || cj < ci) {
-            *maxCj = cj;
-            *maxDeltaAlmostMod = deltaAlmostMod;
-        }
-    } 
+__device__ void updateMaxModularity(int* maxC, float* maxDeltaMod, int newC, float newDeltaMod) {
+    if (newDeltaMod > *maxDeltaMod || newDeltaMod == *maxDeltaMod && newC < *maxC) {
+        *maxC = newC;
+        *maxDeltaMod = newDeltaMod;
+    }
 }
+
+
 
 __global__ void computeMoveGPU(int n,
                                 int* newComm, 
@@ -400,7 +391,8 @@ __global__ void computeMoveGPU(int n,
                                 int* hashOffset,
                                 float* hashWeight,
                                 int* hashComm) {
-    __shared__ int partials[THREADS_PER_BLOCK];    
+    __shared__ int partialCMax[THREADS_PER_BLOCK];
+    __shared__ float partialDeltaMod[THREADS_PER_BLOCK];
     for (int i = blockIdx.x; i < n; i += gridDim.x) {
         int tid = threadIdx.x;
         int step = blockDim.x;
@@ -448,48 +440,52 @@ __global__ void computeMoveGPU(int n,
         __syncthreads();
 
         partialCMax[tid] = n;
-        partialDeltaAlmostMod[tid] = -1;
+        partialDeltaMod[tid] = -1;
         for (int j = offset + tid; j < offset + size; j += step) {
             if (hashComm[j] == EMPTY_SLOT)
                 continue;
-            modularityArgMax(&partialCMax[tid], &partialDeltaAlmostMod[tid], j, i, ci, hashWeight, hashComm, k, ac, comSize, wm);            
+
+            int cj = hashComm[pos];
+            float wsum = hashWeight[pos];
+            
+            float deltaMod = wsum / wm 
+            + k[i] * (ac[ci] - k[i] - ac[cj]) / (2 * wm * wm);
+        
+            if (comSize[cj] > 1 || comSize[ci] > 1 || cj < ci) {
+                updateMaxModularity(&partialCMax[tid], &partialDeltaMod[tid], cj, deltaMod);
+            }
         }
         __syncthreads();
 
         for (int s = blockDim.x / 2; s >0 ; s >>= 1) {
-            if (tid < s) { //TODO
-                if (deltaAlmostMod > *maxDeltaAlmostMod || deltaAlmostMod == *maxDeltaAlmostMod && cj < *maxCj) {
-                    if (comSize[cj] > 1 || comSize[ci] > 1 || cj < ci) {
-                        *maxCj = cj;
-                        *maxDeltaAlmostMod = deltaAlmostMod;
-                    }
-                }   
+            if (tid < s) {
+                updateMaxModularity(&partialCMax[tid], &partialDeltaMod[tid], partialCMax[tid + s], partialDeltaMod[tid + s]);
             }
             __syncthreads();
         }
 
+        if (tid == 0) {
+            float maxDeltaMod = partialDeltaMod[0];
+            itr = 0;
+            do {    
+                // cerr << "szukam hasha" << endl;
+                pos = offset + doubleHash(ci, itr, size);
+                // cerr << "znalazlem!" << endl;
+                // cerr << "ci: " << ci << " size: " << size << " itr: " << itr << " pos: " << pos << " hashComm[pos]: " << hashComm[pos] << endl; 
 
-        itr = 0;
-        do {    
-            // cerr << "szukam hasha" << endl;
-            pos = offset + doubleHash(ci, itr, size);
-            // cerr << "znalazlem!" << endl;
-            // cerr << "ci: " << ci << " size: " << size << " itr: " << itr << " pos: " << pos << " hashComm[pos]: " << hashComm[pos] << endl; 
+                itr++;
+            } while (hashComm[pos] != ci && hashComm[pos] != EMPTY_SLOT);
 
-            itr++;
-        } while (hashComm[pos] != ci && hashComm[pos] != EMPTY_SLOT);
+            //if not found better move maxDeltaMod will be negative
+            //cerr << "node: " << i << " to: " << maxCj << " maxDeltaMod: " << maxDeltaMod << " hashMap[ci]: " << hashMap[ci] << endl; 
+            // cerr << "eeee" << endl;
 
-        //if not found better move maxDeltaMod will be negative
-        float maxDeltaMod = maxDeltaAlmostMod - hashWeight[pos] / wm;
-        //cerr << "node: " << i << " to: " << maxCj << " maxDeltaMod: " << maxDeltaMod << " hashMap[ci]: " << hashMap[ci] << endl; 
-        // cerr << "eeee" << endl;
-
-        if (maxDeltaMod > 0) {
-            newComm[i] = maxCj;
-        } else {
-            newComm[i] = ci;
+            if (maxDeltaMod - hashWeight[pos] / wm > 0) {
+                newComm[i] = partialCMax[0];
+            } else {
+                newComm[i] = ci;
+            }
         }
-        __syncthreads();
     // cerr << "elko" << endl;
     }
 }
@@ -792,20 +788,23 @@ int main(int argc, char *argv[]) {
             hvi hashOffset = dhashOffset;
             hvf hashWeight = dhashWeight;
             hvi hashComm = dhashComm;
-            computeMoveGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, 
-                                                                 ptr(newComm), 
-                                                                 ptr(V), 
-                                                                 ptr(N), 
-                                                                 ptr(W), 
-                                                                 ptr(C), 
-                                                                 ptr(comSize), 
-                                                                 ptr(k), 
-                                                                 ptr(ac), 
-                                                                 wm, 
-                                                                 ptr(hashOffset), 
-                                                                 ptr(hashWeight), 
-                                                                 ptr(hashComm));
+            // computeMoveGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, 
+            //                                                      ptr(newComm), 
+            //                                                      ptr(V), 
+            //                                                      ptr(N), 
+            //                                                      ptr(W), 
+            //                                                      ptr(C), 
+            //                                                      ptr(comSize), 
+            //                                                      ptr(k), 
+            //                                                      ptr(ac), 
+            //                                                      wm, 
+            //                                                      ptr(hashOffset), 
+            //                                                      ptr(hashWeight), 
+            //                                                      ptr(hashComm));
+
             TOHOST
+            for (int i = 0; i < n; i++) 
+                computeMove(i, n, newComm, V, N, W, C, comSize, k, ac, wm, hashOffset, hashWeight, hashComm);
             C = newComm;
 
             ac.assign(n, 0);
