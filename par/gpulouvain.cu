@@ -292,6 +292,7 @@ void computeMove(int i,
     int itr, pos;
 
     if (size == 0) {
+        newComm[i] = ci;
         return;
     }
 
@@ -402,6 +403,8 @@ __global__ void computeMoveGPU(int n,
         int itr, pos;
 
         if (size == 0) {
+            if (tid == 0)
+                newComm[i] = ci;
             continue;
         }
 
@@ -423,7 +426,7 @@ __global__ void computeMoveGPU(int n,
                         atomicAdd(&hashWeight[pos], W[j]); 
                     }
                 } else if (hashComm[pos] == EMPTY_SLOT) {
-                    if (EMPTY_SLOT != atomicCAS(&hashComm[pos], EMPTY_SLOT, cj)) {
+                    if (cj == atomicCAS(&hashComm[pos], EMPTY_SLOT, cj)) {
                         if (N[j] != i) {
                             atomicAdd(&hashWeight[pos], W[j]); 
                         }
@@ -448,7 +451,7 @@ __global__ void computeMoveGPU(int n,
             int newC = hashComm[pos];
             
             float deltaMod = hashWeight[pos] / wm 
-            + k[i] * (ac[ci] - k[i] - ac[newC]) / 2 / wm / wm;
+                                + k[i] * (ac[ci] - k[i] - ac[newC]) / (2 * wm * wm);
         
             if (comSize[newC] > 1 || comSize[ci] > 1 || newC < ci) {
                 updateMaxModularity(&partialCMax[tid], &partialDeltaMod[tid], newC, deltaMod);
@@ -775,7 +778,7 @@ int main(int argc, char *argv[]) {
             dvi dhashSize = dvi(n);
             thrust::transform(ddegree.begin(), ddegree.end(), dhashSize.begin(), getHashMapSize);
             
-            dvi dhashOffset = dvi(n + 1);
+            dvi dhashOffset = dvi(n + 1); //TODO move memory allocation up
             dhashOffset[0] = 0;
             thrust::inclusive_scan(dhashSize.begin(), dhashSize.end(), dhashOffset.begin() + 1);
 
@@ -783,28 +786,36 @@ int main(int argc, char *argv[]) {
             dvi dhashComm(dhashOffset.back(), EMPTY_SLOT);
             
           
-            // computeMoveGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, 
-            //                                                      ptr(dnewComm), 
-            //                                                      ptr(dV), 
-            //                                                      ptr(dN), 
-            //                                                      ptr(dW), 
-            //                                                      ptr(dC), 
-            //                                                      ptr(dcomSize), 
-            //                                                      ptr(dk), 
-            //                                                      ptr(dac), 
-            //                                                      wm, 
-            //                                                      ptr(dhashOffset), 
-            //                                                      ptr(dhashWeight), 
-            //                                                      ptr(dhashComm));
-            TOHOST
+            computeMoveGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, 
+                                                                 ptr(dnewComm), 
+                                                                 ptr(dV), 
+                                                                 ptr(dN), 
+                                                                 ptr(dW), 
+                                                                 ptr(dC), 
+                                                                 ptr(dcomSize), 
+                                                                 ptr(dk), 
+                                                                 ptr(dac), 
+                                                                 wm, 
+                                                                 ptr(dhashOffset), 
+                                                                 ptr(dhashWeight), 
+                                                                 ptr(dhashComm));
+            if (debug) {                         
+                float dhashsum = thrust::reduce(dhashWeight.begin(), dhashWeight.end(), (float) 0, thrust::plus<float>());                                 
+                TOHOST
 
-            hvi hashOffset = dhashOffset;
-            hvf hashWeight = dhashWeight;
-            hvi hashComm = dhashComm;
-            for (int i = 0; i < n; ++i) {	            
-                computeMove(i, n, newComm, V, N, W, C, comSize, k, ac, wm, hashOffset, hashWeight, hashComm);
+                newComm = C;
+                hvi hashOffset = dhashOffset;
+                hvf hashWeight(hashOffset.back(), 0);
+                hvi hashComm(hashOffset.back(), EMPTY_SLOT);
+                // hvf hashWeight = dhashWeight;
+                // hvi hashComm = dhashComm;
+                for (int i = 0; i < n; ++i) {	            
+                    computeMove(i, n, newComm, V, N, W, C, comSize, k, ac, wm, hashOffset, hashWeight, hashComm);
+                }
+                
+                float hashsum = thrust::reduce(hashWeight.begin(), hashWeight.end(), (float) 0, thrust::plus<float>());                                 
+                assert(abs(dhashsum - hashsum) < 0.001);
             }
-
             C = newComm;
 
             ac.assign(n, 0);
