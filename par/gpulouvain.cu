@@ -580,6 +580,12 @@ void initializeAc(int n, const hvi& C, const hvf& k, hvf& ac) {
     }
 }
 
+__global__ void initializeAcGPU(int n, int* C, float* k, float* ac) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x) {
+        atomicAdd(&ac[C[i]], k[i]);
+    }
+}
+
 void initializeUniqueCAndC(int n, const hvi& C, hvi& uniqueC, int& c) {
     uniqueC = C;
     set<int> s(uniqueC.begin(), uniqueC.end());
@@ -639,10 +645,24 @@ void initializeComDegree(int n, const hvi& degree, const hvi& C, hvi& comDegree)
     }
 }
 
+__global__ void initializeComDegreeGPU(int n, int* degree, int* C, int* comDegree) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x) {
+        atomicAdd(&comDegree[C[i]], degree[i]); 
+    }
+}
+
 void initializeNewID(int n, const hvi& C, const hvi& comSize, hvi& newID) {
     for (int i = 0; i < n; ++i) {
         if (comSize[C[i]] != 0) {
             newID[C[i]] = 1;
+        }
+    }
+}
+
+__global__ void initializeNewIDGPU(int n, int* C, int* comSize, int* newID) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x) {
+        if (comSize[C[i]] != 0) {
+            atomicCAS(&newID[C[i]], 0, 1);
         }
     }
 }
@@ -654,6 +674,33 @@ void initializeComm(int n, const hvi& C, hvi& comm, hvi& vertexStart) {
         comm[res] = i; 
     }
 }
+__global__ void initializeCommGPU(int n, int* C, int* comm, int* vertexStart) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x) {
+        int res = atomicSub(&vertexStart[C[i]], 1) - 1;
+        comm[res] = i; 
+    }
+}
+
+void initializeNewV(int n, const hvi& C,  const hvi& newID, const hvi& edgePos, hvi& newV) {
+    for (int i = 0; i < n; ++i) {
+        newV[newID[C[i]]] = edgePos[C[i]];
+    }
+}
+
+__global__ void initializeNewVGPU(int n, int* C, int* newID, int* edgePos, int* newV) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x) {
+        atomicCAS(&newV[newID[C[i]]], 0, edgePos[C[i]]);
+    }
+}
+
+
+// void initializeCommGPU(int n, const hvi& C, hvi& comm, hvi& vertexStart) {
+//     for (int i = 0; i < n; ++i) {
+//         vertexStart[C[i]] -= 1; //in paper is add, atomic
+//         int res = vertexStart[C[i]];
+//         comm[res] = i; 
+//     }
+// }
 
 int main(int argc, char *argv[]) {
     //commandline vars
@@ -763,9 +810,8 @@ int main(int argc, char *argv[]) {
             pvec(ac);
             pvec(comSize);
         }
-        TOHOST
         do {
-            TODEVICE
+            
             dnewComm = dC;
             dcomSize = dvi(n, 0);
             initializeComSizeGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(dC), ptr(dcomSize));
@@ -799,9 +845,12 @@ int main(int argc, char *argv[]) {
                                                                  ptr(dhashOffset), 
                                                                  ptr(dhashWeight), 
                                                                  ptr(dhashComm));
-            if (debug) {                         
-                float dhashsum = thrust::reduce(dhashWeight.begin(), dhashWeight.end(), (float) 0, thrust::plus<float>());                                 
+            
+            if (DEBUG) {
                 TOHOST
+                //compute move on cpu and gpu work the same way                         
+                float dhashsum = thrust::reduce(dhashWeight.begin(), dhashWeight.end(), (float) 0, thrust::plus<float>());                                 
+                
 
                 newComm = C;
                 hvi hashOffset = dhashOffset;
@@ -816,15 +865,31 @@ int main(int argc, char *argv[]) {
                 float hashsum = thrust::reduce(hashWeight.begin(), hashWeight.end(), (float) 0, thrust::plus<float>());                                 
                 assert(abs(dhashsum - hashsum) < 0.001);
             }
-            C = newComm;
+            
+            dC = dnewComm;
 
-            ac.assign(n, 0);
-            initializeAc(n, C, k, ac);
-            dassert(abs(sum(ac) - 2 * wm) < 0.0001);
+            dac.assign(n, 0);
+            initializeAcGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(dC), ptr(dk), ptr(dac));
+            if (DEBUG) {
+                float acsum = thrust::reduce(dac.begin(), dac.end(), (float) 0, thrust::plus<float>());                                 
+                assert(abs(acsum - 2 * wm) < 0.0001);
+            }
+            
 
             Qp = Qc;
-            initializeUniqueCAndC(n, C, uniqueC, c);
-            Qc = calculateModularity(n, c, V, N, W, C, uniqueC, ac, wm);
+            initializeUniqueCAndCGPU(n, dC, duniqueC, c);
+            dvf dQc(1);
+            calculateModularityGPU<<<1, THREADS_PER_BLOCK>>>(n,
+                                                        c, 
+                                                        ptr(dV),
+                                                        ptr(dN),
+                                                        ptr(dW),
+                                                        ptr(dC),
+                                                        ptr(duniqueC),
+                                                        ptr(dac),
+                                                        wm,
+                                                        ptr(dQc));
+            Qc = dQc[0];
             
             cerr << "modularity: " << Qc << endl;
             if (DEBUG) {
@@ -835,57 +900,70 @@ int main(int argc, char *argv[]) {
             }
 
         } while (abs(Qc - Qp) > threshold);
+        
 
-        //aggregation phase
-        comSize = hvi(n, 0);
-        hvi comDegree(n, 0);
+        //AGGREGATION PHASE
 
-        degree = hvi(n, 0); //check if needed
-        initializeDegree(n, V, W, degree);
+        //maybe it is possible to merge this kernels?
+        ddegree = dvi(n, 0); 
+        initializeDegreeGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(dV), ptr(dW), ptr(ddegree));
 
-        initializeComSize(n, C, comSize);
-        initializeComDegree(n, degree, C, comDegree);
+        dvi dcomDegree(n, 0);
+        initializeComDegreeGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(ddegree), ptr(dC), ptr(dcomDegree));
 
-        hvi newID(n, 0);
+        dcomSize = dvi(n, 0);
+        initializeComSizeGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(dC), ptr(dcomSize));
+    
+        dvi dnewID(n, 0);
+        initializeNewIDGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(dC), ptr(dcomSize), ptr(dnewID));
+        thrust::inclusive_scan(dnewID.begin(), dnewID.end(), dnewID.begin());
 
-        initializeNewID(n, C, comSize, newID);
+        dvi dedgePos = dcomDegree;
+        thrust::inclusive_scan(dedgePos.begin(), dedgePos.end(), dedgePos.begin());
+
+        dvi dvertexStart = dcomSize;
+        thrust::inclusive_scan(dvertexStart.begin(), dvertexStart.end(), dvertexStart.begin());
+
+        
        
-        cumsum(newID);
 
-        hvi edgePos = comDegree;
-        cumsum(edgePos);
+        dvi dcomm(n);
+        initializeCommGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(dC), ptr(dcomm), ptr(dvertexStart));
 
-        hvi vertexStart = comSize;
-        cumsum(vertexStart);
-
-        hvi comm(n, 0);
-        initializeComm(n, C, comm, vertexStart);
-
-         
         //merge community
         //new graph
         int newn; 
         int newm; 
-        hvi newV;
-        hvi newN; 
-        hvf newW;
+        dvi dnewV;
+        dvi dnewN; 
+        dvf dnewW;
 
-        newn = newID.back();
-        newm = edgePos.back();
+        newn = dnewID.back();
+        newm = dedgePos.back();
 
-        newV = hvi(newn + 1, 0);
-        for (int i = 0; i < n; ++i) {
-            newV[newID[C[i]]] = edgePos[C[i]];
-        }
+        dnewV = dvi(newn + 1, 0);
+        initializeNewVGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(dC), ptr(dnewID), ptr(dedgePos), ptr(dnewV));
 
-        newN = hvi(newm, -1);
-        newW = hvf(newm, NO_EDGE);
+      
+        dnewN = dvi(newm, -1);
+        dnewW = dvf(newm, NO_EDGE);
+
+        TOHOST
+        hvi comDegree = dcomDegree;
+        hvi newID = dnewID;
+        hvi edgePos = dedgePos;
+        hvi vertexStart = dvertexStart;
+        hvi comm = dcomm;
+        hvi newV = dnewV;
+        hvi newN = dnewN; 
+        hvf newW = dnewW;
 
         map<int, float> hashMap;
         int oldc = C[comm[0]]; //can be n = 0?
         for (int idx = 0; idx < n; ++idx) {
             int i = comm[idx];
             int ci = C[i];
+
             if (oldc != ci) {
                 int edgeId = newV[newID[oldc] - 1];
                 for (auto it = hashMap.begin(); it != hashMap.end(); it++ ) {
@@ -908,7 +986,6 @@ int main(int argc, char *argv[]) {
                 }
                 hashMap[cj] += W[j];
             }
-            
         }
 
         int edgeId = newV[newID[oldc] - 1];
