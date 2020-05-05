@@ -20,9 +20,6 @@
 
 
 
-
-
-
 //ASSUMPTIONS 
 // there is at least one edge with a positive weight
 
@@ -48,6 +45,7 @@
     dnewComm = newComm; \
     dk = k; \
     dac = ac; \
+    ddegree = degree; \
     duniqueC = uniqueC; \
     dcomSize = comSize; \
     dfinalC = finalC; 
@@ -60,6 +58,7 @@
     newComm = dnewComm; \
     k = dk; \
     ac = dac; \
+    degree = ddegree; \
     uniqueC = duniqueC; \
     comSize = dcomSize; \
     finalC = dfinalC; 
@@ -714,6 +713,7 @@ void mergeCommunity(int n,
                     const hvi& hashOffset,
                     hvi& hashComm,
                     hvf& hashWeight,
+                    int newn,
                     const hvi& newV,
                     hvi& newN,
                     hvf& newW) {
@@ -727,7 +727,10 @@ void mergeCommunity(int n,
         if (size == 0) {
             continue;
         }
-        assert(size >= degree[i]);
+
+        if (DEBUG) {
+            assert(size >= degree[i]);
+        }
 
         for (int j = V[i]; j < V[i + 1]; ++j) {
             if (W[j] == NO_EDGE)
@@ -750,7 +753,21 @@ void mergeCommunity(int n,
         }   
     }
 
+    for (int i = 0; i < newn; ++i) {
+        int edgeId = newV[i];
+        for (int pos = hashOffset[i]; pos < hashOffset[i + 1]; ++pos) {
+            int newcj = hashComm[pos];
 
+            if (newcj == EMPTY_SLOT) {
+                continue;
+            }
+            float wsum = hashWeight[pos];
+
+            newN[edgeId] = newcj;
+            newW[edgeId] = wsum;
+            edgeId++;
+        }        
+    }
 }
 
 
@@ -1028,47 +1045,48 @@ int main(int argc, char *argv[]) {
         hvi hashOffset = dhashOffset; 
         hvi hashComm = dhashComm;
         hvf hashWeight = dhashWeight;
-        mergeCommunity(n, V, N, W, C, comm, degree, newID, hashOffset, hashComm, hashWeight, newV, newN, newW);
+
+        mergeCommunity(n, V, N, W, C, comm, degree, newID, hashOffset, hashComm, hashWeight, newn, newV, newN, newW);
 
         ////////////////////////////////////////////////////////////////
-        map<int, float> hashMap;
-        int oldc = C[comm[0]]; //can be n = 0?
-        for (int idx = 0; idx < n; ++idx) {
-            int i = comm[idx];
-            int ci = C[i];
+        // map<int, float> hashMap;
+        // int oldc = C[comm[0]]; //can be n = 0?
+        // for (int idx = 0; idx < n; ++idx) {
+        //     int i = comm[idx];
+        //     int ci = C[i];
 
-            if (oldc != ci) {
-                int edgeId = newV[newID[oldc]];
-                for (auto it = hashMap.begin(); it != hashMap.end(); it++ ) {
-                    float cj = it->first;
-                    float wsum = it->second;
-                    newN[edgeId] = newID[cj];
-                    newW[edgeId] = wsum;
-                    edgeId++;
-                }
-                oldc = C[comm[idx]];
-                hashMap.clear();
-            } 
+        //     if (oldc != ci) {
+        //         int edgeId = newV[newID[oldc]];
+        //         for (auto it = hashMap.begin(); it != hashMap.end(); it++ ) {
+        //             float cj = it->first;
+        //             float wsum = it->second;
+        //             newN[edgeId] = newID[cj];
+        //             newW[edgeId] = wsum;
+        //             edgeId++;
+        //         }
+        //         oldc = C[comm[idx]];
+        //         hashMap.clear();
+        //     } 
             
-            for (int j = V[i]; j < V[i + 1]; ++j) {
-                if (W[j] == NO_EDGE)
-                    break; 
-                int cj = C[N[j]];
-                if (hashMap.count(cj) == 0) {
-                    hashMap[cj] = 0;
-                }
-                hashMap[cj] += W[j];
-            }
-        }
+        //     for (int j = V[i]; j < V[i + 1]; ++j) {
+        //         if (W[j] == NO_EDGE)
+        //             break; 
+        //         int cj = C[N[j]];
+        //         if (hashMap.count(cj) == 0) {
+        //             hashMap[cj] = 0;
+        //         }
+        //         hashMap[cj] += W[j];
+        //     }
+        // }
 
-        int edgeId = newV[newID[oldc]];
-        for (auto it = hashMap.begin(); it != hashMap.end(); it++ ) {
-            float cj = it->first;
-            float wsum = it->second;
-            newN[edgeId] = newID[cj];
-            newW[edgeId] = wsum;
-            edgeId++;
-        }
+        // int edgeId = newV[newID[oldc]];
+        // for (auto it = hashMap.begin(); it != hashMap.end(); it++ ) {
+        //     float cj = it->first;
+        //     float wsum = it->second;
+        //     newN[edgeId] = newID[cj];
+        //     newW[edgeId] = wsum;
+        //     edgeId++;
+        //}
         ////////////////////////////////////////////////////////////////
     
         for (int i = 0; i < initialN; ++i) {
