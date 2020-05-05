@@ -23,11 +23,12 @@
 //ASSUMPTIONS 
 // there is at least one edge with a positive weight
 
-
-// TODO bigger threshold int the first iteration
 // TODO bucket partition
-// TODO two hashmaps; hash function
 // TODO how can update modularity
+// TODO code grooming
+// TODO correct outer loop condition (from slack)
+
+
 #define dassert(a) \
     if ((DEBUG)) assert((a));
 
@@ -770,6 +771,24 @@ void mergeCommunity(int n,
     }
 }
 
+void saveFinalCommunities(int initialN,
+                          hvi& finalC,
+                          const hvi& C,
+                          const hvi& newID) {
+    for (int i = 0; i < initialN; ++i) {
+        finalC[i] = newID[C[finalC[i]]];
+    }
+}
+
+__global__ void saveFinalCommunitiesGPU(int initialN,
+                                        int* finalC,
+                                        int* C,
+                                        int* newID) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < initialN; i += blockDim.x * gridDim.x) {
+        finalC[i] = newID[C[finalC[i]]];
+    }
+}
+
 __global__ void mergeCommunityFillHashMapGPU(int n,
                                                 int* V,
                                                 int* N,
@@ -913,8 +932,8 @@ int main(int argc, char *argv[]) {
     finalC = hvi(n, 0);
     initializeCommunities(initialN, finalC);
 
+    TODEVICE
     do { 
-        TODEVICE
         dC = dvi(n, 0);//redundant?
         thrust::sequence(dC.begin(), dC.end()); //initializeCommunities
 
@@ -1136,74 +1155,18 @@ int main(int argc, char *argv[]) {
                                                                                 ptr(dnewV), 
                                                                                 ptr(dnewN), 
                                                                                 ptr(dnewW));
-
-        TOHOST
-        hvi comDegree = dcomDegree;
-        hvi newID = dnewID;
-        hvi edgePos = dedgePos;
-        hvi vertexStart = dvertexStart;
-        hvi comm = dcomm;
-        hvi newV = dnewV;
-        hvi newN = dnewN; 
-        hvf newW = dnewW;
-        hvi hashOffset = dhashOffset; 
-        hvi hashComm = dhashComm;
-        hvf hashWeight = dhashWeight;
-        ////////////////////////////////////////////////////////////////
-        // map<int, float> hashMap;
-        // int oldc = C[comm[0]]; //can be n = 0?
-        // for (int idx = 0; idx < n; ++idx) {
-        //     int i = comm[idx];
-        //     int ci = C[i];
-
-        //     if (oldc != ci) {
-        //         int edgeId = newV[newID[oldc]];
-        //         for (auto it = hashMap.begin(); it != hashMap.end(); it++ ) {
-        //             float cj = it->first;
-        //             float wsum = it->second;
-        //             newN[edgeId] = newID[cj];
-        //             newW[edgeId] = wsum;
-        //             edgeId++;
-        //         }
-        //         oldc = C[comm[idx]];
-        //         hashMap.clear();
-        //     } 
-            
-        //     for (int j = V[i]; j < V[i + 1]; ++j) {
-        //         if (W[j] == NO_EDGE)
-        //             break; 
-        //         int cj = C[N[j]];
-        //         if (hashMap.count(cj) == 0) {
-        //             hashMap[cj] = 0;
-        //         }
-        //         hashMap[cj] += W[j];
-        //     }
-        // }
-
-        // int edgeId = newV[newID[oldc]];
-        // for (auto it = hashMap.begin(); it != hashMap.end(); it++ ) {
-        //     float cj = it->first;
-        //     float wsum = it->second;
-        //     newN[edgeId] = newID[cj];
-        //     newW[edgeId] = wsum;
-        //     edgeId++;
-        //}
-        ////////////////////////////////////////////////////////////////
-    
-        for (int i = 0; i < initialN; ++i) {
-            finalC[i] = newID[C[finalC[i]]];
-        }
         
-        if (DEBUG) {
-            cerr << "sum of weights: " << positiveSum(W) << endl;
-        }
+
+        saveFinalCommunitiesGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(initialN, ptr(dfinalC), ptr(dC), ptr(dnewID));
+
+        
 
         //update graph
         n = newn; 
         m = newm; 
-        V = newV;
-        N = newN; 
-        W = newW;
+        dV = dnewV;
+        dN = dnewN; 
+        dW = dnewW;
     } while (abs(Qc - Qba)> threshold);
 
     auto endTime = chrono::steady_clock::now();
@@ -1218,6 +1181,7 @@ int main(int argc, char *argv[]) {
     HANDLE_ERROR(cudaEventDestroy(stopTime));
 
     if (showAssignment) {
+        finalC = dfinalC;
         printClustering(initialN, finalC);
     }
     return 0;
