@@ -770,6 +770,87 @@ void mergeCommunity(int n,
     }
 }
 
+__global__ void mergeCommunityFillHashMapGPU(int n,
+                                                int* V,
+                                                int* N,
+                                                float* W,
+                                                int* C,
+                                                int* comm,
+                                                int* degree,
+                                                int* newID,
+                                                int* hashOffset,
+                                                int* hashComm,
+                                                float* hashWeight,
+                                                bool DEBUG) {
+    for (int idx = blockIdx.x; idx < n; idx += gridDim.x) {
+        int tid = threadIdx.x;
+        int step = blockDim.x;
+
+        int i = comm[idx];
+        int newci = newID[C[i]];
+        int offset = hashOffset[newci];
+        int size = hashOffset[newci + 1] - offset;
+        int itr, pos;
+
+        if (size == 0) {
+            continue;
+        }
+
+        if (DEBUG) {
+            assert(size >= degree[i]);
+        }
+
+        for (int j = tid + V[i]; j < V[i + 1]; j += step) {
+            if (W[j] == NO_EDGE)
+                break; 
+
+            int newcj = newID[C[N[j]]];
+
+            itr = 0;
+            do {
+                pos = offset + doubleHash(newcj, itr, size);
+    
+                if (hashComm[pos] == newcj) {
+                        atomicAdd(&hashWeight[pos], W[j]); 
+                } else if (hashComm[pos] == EMPTY_SLOT) {
+                    if (newcj == atomicCAS(&hashComm[pos], EMPTY_SLOT, newcj)) {
+                            atomicAdd(&hashWeight[pos], W[j]); 
+                    } 
+                    else if (hashComm[pos] == newcj) {
+                            atomicAdd(&hashWeight[pos], W[j]); 
+                    }
+                }
+                itr++;
+            } while (hashComm[pos] != newcj);
+        }   
+    }
+}
+
+
+__global__ void mergeCommunityInitializeGraphGPU(int* hashOffset,
+                                                    int* hashComm,
+                                                    float* hashWeight,
+                                                    int newn,
+                                                    int* newV,
+                                                    int* newN,
+                                                    float* newW) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < newn; i += blockDim.x * gridDim.x) {
+        int edgeId = newV[i];
+        for (int pos = hashOffset[i]; pos < hashOffset[i + 1]; ++pos) {
+            int newcj = hashComm[pos];
+
+            if (newcj == EMPTY_SLOT) {
+                continue;
+            }
+            float wsum = hashWeight[pos];
+
+            newN[edgeId] = newcj;
+            newW[edgeId] = wsum;
+            edgeId++;
+        }        
+    }
+}
+
 
 int main(int argc, char *argv[]) {
     //commandline vars
@@ -1033,6 +1114,29 @@ int main(int argc, char *argv[]) {
         dvi dhashComm(dhashOffset.back(), EMPTY_SLOT);
         dvf dhashWeight(dhashOffset.back(), 0);
 
+       
+
+        // mergeCommunity(n, V, N, W, C, comm, degree, newID, hashOffset, hashComm, hashWeight, newn, newV, newN, newW);
+        mergeCommunityFillHashMapGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, 
+                                                                            ptr(dV), 
+                                                                            ptr(dN), 
+                                                                            ptr(dW), 
+                                                                            ptr(dC), 
+                                                                            ptr(dcomm), 
+                                                                            ptr(ddegree), 
+                                                                            ptr(dnewID), 
+                                                                            ptr(dhashOffset), 
+                                                                            ptr(dhashComm), 
+                                                                            ptr(dhashWeight),
+                                                                            DEBUG);
+        mergeCommunityInitializeGraphGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(ptr(dhashOffset), 
+                                                                                ptr(dhashComm),
+                                                                                ptr(dhashWeight), 
+                                                                                newn, 
+                                                                                ptr(dnewV), 
+                                                                                ptr(dnewN), 
+                                                                                ptr(dnewW));
+
         TOHOST
         hvi comDegree = dcomDegree;
         hvi newID = dnewID;
@@ -1045,9 +1149,6 @@ int main(int argc, char *argv[]) {
         hvi hashOffset = dhashOffset; 
         hvi hashComm = dhashComm;
         hvf hashWeight = dhashWeight;
-
-        mergeCommunity(n, V, N, W, C, comm, degree, newID, hashOffset, hashComm, hashWeight, newn, newV, newN, newW);
-
         ////////////////////////////////////////////////////////////////
         // map<int, float> hashMap;
         // int oldc = C[comm[0]]; //can be n = 0?
