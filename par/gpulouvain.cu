@@ -13,6 +13,7 @@
 #include <thrust/sequence.h>
 #include <thrust/device_ptr.h>
 #include <thrust/sort.h>
+#include <thrust/copy.h>
 #include <thrust/unique.h>
 #include <thrust/transform.h>
 #include <thrust/functional.h>
@@ -68,6 +69,7 @@
 #define THREADS_PER_BLOCK 128
 #define EMPTY_SLOT -1
 
+using namespace thrust::placeholders;
 using namespace std;
 
 using pi = pair<int, int>;
@@ -244,7 +246,8 @@ struct hashMapSizesGenerator{
     //     }
     //     return primes;
     // }
-    __host__ __device__ int operator()(const int &x) const {
+    __host__ __device__ 
+   int operator()(const int &x) const {
         if (x == 0) return 0;
         int v = (int) (ratio * (x + 1));
         v--;
@@ -256,6 +259,13 @@ struct hashMapSizesGenerator{
         v++;
         return v;
     }
+};
+
+struct isNotZero {
+  __host__ __device__
+  bool operator()(const int &x) const {
+    return x != 0;
+  }
 };
 
 __host__  __device__ int h1(int Ci) {
@@ -683,24 +693,66 @@ __global__ void initializeCommGPU(int n, int* C, int* comm, int* vertexStart) {
 
 void initializeNewV(int n, const hvi& C,  const hvi& newID, const hvi& edgePos, hvi& newV) {
     for (int i = 0; i < n; ++i) {
-        newV[newID[C[i]]] = edgePos[C[i]];
+        newV[newID[C[i]] + 1] = edgePos[C[i]];
     }
 }
 
 __global__ void initializeNewVGPU(int n, int* C, int* newID, int* edgePos, int* newV) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x) {
-        atomicCAS(&newV[newID[C[i]]], 0, edgePos[C[i]]);
+        atomicCAS(&newV[newID[C[i]] + 1], 0, edgePos[C[i]]);
     }
 }
 
+void mergeCommunity(int n,
+                    const hvi& V,
+                    const hvi& N,
+                    const hvf& W,
+                    const hvi& C,
+                    const hvi& comm,
+                    const hvi& degree,
+                    const hvi& newID,
+                    const hvi& hashOffset,
+                    hvi& hashComm,
+                    hvf& hashWeight,
+                    const hvi& newV,
+                    hvi& newN,
+                    hvf& newW) {
+    for (int idx = 0; idx < n; ++idx) {
+        int i = comm[idx];
+        int newci = newID[C[i]];
+        int offset = hashOffset[newci];
+        int size = hashOffset[newci + 1] - offset;
+        int itr, pos;
 
-// void initializeCommGPU(int n, const hvi& C, hvi& comm, hvi& vertexStart) {
-//     for (int i = 0; i < n; ++i) {
-//         vertexStart[C[i]] -= 1; //in paper is add, atomic
-//         int res = vertexStart[C[i]];
-//         comm[res] = i; 
-//     }
-// }
+        if (size == 0) {
+            continue;
+        }
+        assert(size >= degree[i]);
+
+        for (int j = V[i]; j < V[i + 1]; ++j) {
+            if (W[j] == NO_EDGE)
+                break; 
+
+            int newcj = newID[C[N[j]]];
+
+            itr = 0;
+            do {
+                pos = offset + doubleHash(newcj, itr, size);
+    
+                if (hashComm[pos] == newcj) {
+                    hashWeight[pos] += W[j]; 
+                } else if (hashComm[pos] == EMPTY_SLOT) {
+                    hashComm[pos] = newcj;
+                    hashWeight[pos] += W[j]; 
+                }
+                itr++;
+            } while (hashComm[pos] != newcj);
+        }   
+    }
+
+
+}
+
 
 int main(int argc, char *argv[]) {
     //commandline vars
@@ -742,7 +794,7 @@ int main(int argc, char *argv[]) {
     dvi dfinalC;
     dvi ddegree;
 
-
+    hashMapSizesGenerator getHashMapSize(1.5);
 
     float Qba, Qp, Qc; //modularity before outermostloop iteration, before and after modularity optimisation respectively
     
@@ -820,7 +872,6 @@ int main(int argc, char *argv[]) {
 
             
             
-            hashMapSizesGenerator getHashMapSize(1.5);
             dvi dhashSize = dvi(n);
             thrust::transform(ddegree.begin(), ddegree.end(), dhashSize.begin(), getHashMapSize);
             
@@ -917,15 +968,13 @@ int main(int argc, char *argv[]) {
         dvi dnewID(n, 0);
         initializeNewIDGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(dC), ptr(dcomSize), ptr(dnewID));
         thrust::inclusive_scan(dnewID.begin(), dnewID.end(), dnewID.begin());
+        thrust::for_each(dnewID.begin(), dnewID.end(), _1 -= 1);
 
         dvi dedgePos = dcomDegree;
         thrust::inclusive_scan(dedgePos.begin(), dedgePos.end(), dedgePos.begin());
 
         dvi dvertexStart = dcomSize;
         thrust::inclusive_scan(dvertexStart.begin(), dvertexStart.end(), dvertexStart.begin());
-
-        
-       
 
         dvi dcomm(n);
         initializeCommGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(dC), ptr(dcomm), ptr(dvertexStart));
@@ -938,7 +987,7 @@ int main(int argc, char *argv[]) {
         dvi dnewN; 
         dvf dnewW;
 
-        newn = dnewID.back();
+        newn = dnewID.back() + 1;
         newm = dedgePos.back();
 
         dnewV = dvi(newn + 1, 0);
@@ -947,6 +996,25 @@ int main(int argc, char *argv[]) {
       
         dnewN = dvi(newm, -1);
         dnewW = dvf(newm, NO_EDGE);
+
+      
+
+        dvi dhashSize = dvi(newn, 0);       //can use not newn but number of verstices with non zero degree
+        thrust::copy_if(dcomDegree.begin(), dcomDegree.end(), dcomSize.begin(), dhashSize.begin(), isNotZero());
+        // for (int i = 0; i < newn; i++) {
+        //     cout << dhashSize[i] << " ";
+        // }
+        // cout << endl;
+        thrust::transform(dhashSize.begin(), dhashSize.end(), dhashSize.begin(), getHashMapSize);
+        
+
+        dvi dhashOffset = dvi(newn + 1); //TODO move memory allocation up
+        dhashOffset[0] = 0;
+        thrust::inclusive_scan(dhashSize.begin(), dhashSize.end(), dhashOffset.begin() + 1);
+
+
+        dvi dhashComm(dhashOffset.back(), EMPTY_SLOT);
+        dvf dhashWeight(dhashOffset.back(), 0);
 
         TOHOST
         hvi comDegree = dcomDegree;
@@ -957,7 +1025,12 @@ int main(int argc, char *argv[]) {
         hvi newV = dnewV;
         hvi newN = dnewN; 
         hvf newW = dnewW;
+        hvi hashOffset = dhashOffset; 
+        hvi hashComm = dhashComm;
+        hvf hashWeight = dhashWeight;
+        mergeCommunity(n, V, N, W, C, comm, degree, newID, hashOffset, hashComm, hashWeight, newV, newN, newW);
 
+        ////////////////////////////////////////////////////////////////
         map<int, float> hashMap;
         int oldc = C[comm[0]]; //can be n = 0?
         for (int idx = 0; idx < n; ++idx) {
@@ -965,11 +1038,11 @@ int main(int argc, char *argv[]) {
             int ci = C[i];
 
             if (oldc != ci) {
-                int edgeId = newV[newID[oldc] - 1];
+                int edgeId = newV[newID[oldc]];
                 for (auto it = hashMap.begin(); it != hashMap.end(); it++ ) {
                     float cj = it->first;
                     float wsum = it->second;
-                    newN[edgeId] = newID[cj] - 1;
+                    newN[edgeId] = newID[cj];
                     newW[edgeId] = wsum;
                     edgeId++;
                 }
@@ -988,18 +1061,18 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        int edgeId = newV[newID[oldc] - 1];
+        int edgeId = newV[newID[oldc]];
         for (auto it = hashMap.begin(); it != hashMap.end(); it++ ) {
             float cj = it->first;
             float wsum = it->second;
-            newN[edgeId] = newID[cj] - 1;
+            newN[edgeId] = newID[cj];
             newW[edgeId] = wsum;
             edgeId++;
         }
-
-
+        ////////////////////////////////////////////////////////////////
+    
         for (int i = 0; i < initialN; ++i) {
-            finalC[i] = newID[C[finalC[i]]] - 1;
+            finalC[i] = newID[C[finalC[i]]];
         }
         
         if (DEBUG) {

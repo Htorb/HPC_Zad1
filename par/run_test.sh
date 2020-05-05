@@ -3,8 +3,8 @@ BRed='\033[1;31m'         # Red
 BGreen='\033[1;32m'       # Green
 Off='\033[0m'             # Text Reset
 
-make clean
-make
+rm ./gpulouvain
+/usr/local/cuda/bin/nvcc gpulouvain.cu -o gpulouvain
 
 echo "----NORMAL----"
 for TEST_PATH in ../test/*.in;  do
