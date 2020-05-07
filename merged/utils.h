@@ -17,7 +17,7 @@ void parseCommandline(bool&        showAssignment,
                       bool&        DEBUG);
 
 void printClustering(int        initialN, 
-                     const vi&  finalC);                    
+                     vi&  finalC);                    
 
 void readGraphFromFile(std::string& matrixFile, 
                        int&         n,

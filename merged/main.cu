@@ -5,6 +5,8 @@
 #include <set>
 #include <cassert> 
 #include <chrono> 
+#include <string>
+
 
 #include <thrust/host_vector.h>
 #include <thrust/device_vector.h>

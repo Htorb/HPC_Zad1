@@ -55,7 +55,7 @@ void printClustering(int initialN, vi& finalC) {
     std::cout << std::endl;
 }
 
-void readGraphFromFile(const std::string& matrixFile, 
+void readGraphFromFile( std::string& matrixFile, 
                         int& n,
                         int& m,
                         vi& V, 
