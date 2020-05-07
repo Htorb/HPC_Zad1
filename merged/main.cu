@@ -629,14 +629,11 @@ int main(int argc, char *argv[]) {
 
         dac = dk; 
         
-
         //modularity optimisation phase
 
-        //
         initializeUniqueCAndCGPU(n, dC, duniqueC, c);
 
 
-        // Qc = calculateModularity(n, c, V, N, W, C, uniqueC, ac, wm);
         dvf dQc(1);
         calculateModularityGPU<<<1, THREADS_PER_BLOCK>>>(n,
                                                         c, 
@@ -686,26 +683,6 @@ int main(int argc, char *argv[]) {
                                                                  ptr(dhashOffset), 
                                                                  ptr(dhashWeight), 
                                                                  ptr(dhashComm));
-            
-            if (DEBUG) {
-                TOHOST
-                //compute move on cpu and gpu work the same way                         
-                float dhashsum = thrust::reduce(dhashWeight.begin(), dhashWeight.end(), (float) 0, thrust::plus<float>());                                 
-                
-
-                newComm = C;
-                hvi hashOffset = dhashOffset;
-                hvf hashWeight(hashOffset.back(), 0);
-                hvi hashComm(hashOffset.back(), EMPTY_SLOT);
-                // hvf hashWeight = dhashWeight;
-                // hvi hashComm = dhashComm;
-                for (int i = 0; i < n; ++i) {	            
-                    computeMove(i, n, newComm, V, N, W, C, comSize, k, ac, wm, hashOffset, hashWeight, hashComm);
-                }
-                
-                float hashsum = thrust::reduce(hashWeight.begin(), hashWeight.end(), (float) 0, thrust::plus<float>());                                 
-                assert(abs(dhashsum - hashsum) < 0.001);
-            }
             
             dC = dnewComm;
 
@@ -783,12 +760,9 @@ int main(int argc, char *argv[]) {
 
       
 
-        dvi dhashSize = dvi(newn, 0);       //can use not newn but number of verstices with non zero degree
+        dvi dhashSize = dvi(newn, 0);      
         thrust::copy_if(dcomDegree.begin(), dcomDegree.end(), dcomSize.begin(), dhashSize.begin(), isNotZero());
-        // for (int i = 0; i < newn; i++) {
-        //     cout << dhashSize[i] << " ";
-        // }
-        // cout << endl;
+
         thrust::transform(dhashSize.begin(), dhashSize.end(), dhashSize.begin(), getHashMapSize);
         
 
@@ -802,7 +776,6 @@ int main(int argc, char *argv[]) {
 
        
 
-        // mergeCommunity(n, V, N, W, C, comm, degree, newID, hashOffset, hashComm, hashWeight, newn, newV, newN, newW);
         mergeCommunityFillHashMapGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, 
                                                                             ptr(dV), 
                                                                             ptr(dN), 
@@ -837,7 +810,6 @@ int main(int argc, char *argv[]) {
     } while (abs(Qc - Qba)> threshold);
 
     
-    // Store the time difference between start and end
     cout << fixed << Qc << endl;
 
     float elapsedTime = stopRecordingTime(startTime, stopTime);
