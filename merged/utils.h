@@ -26,4 +26,10 @@ void readGraphFromFile(std::string& matrixFile,
                        vi&          N,
                        vf&          W);
 
+void startRecordingTime(cudaEvent_t& startTime,
+                        cudaEvent_t& stopTime);
+
+float stopRecordingTime(cudaEvent_t& startTime,
+                        cudaEvent_t& stopTime);
+
 #endif

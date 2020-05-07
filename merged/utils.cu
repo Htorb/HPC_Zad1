@@ -1,9 +1,12 @@
-#include "utils.h"
 #include <vector>
 #include <iostream>
 #include <set>
 #include <algorithm>  
 #include <fstream>
+
+#include "utils.h"
+#include "helpers.h"
+
 
 
 
@@ -99,4 +102,20 @@ void readGraphFromFile( std::string& matrixFile,
     while (v_idx < n + 1) {
         V[v_idx++] = m;
     }
+}
+
+void startRecordingTime(cudaEvent_t& startTime, cudaEvent_t& stopTime) {
+    HANDLE_ERROR(cudaEventCreate(&startTime));
+    HANDLE_ERROR(cudaEventCreate(&stopTime));
+    HANDLE_ERROR(cudaEventRecord(startTime, 0));
+}
+
+float stopRecordingTime(cudaEvent_t& startTime, cudaEvent_t& stopTime) {
+    float elapsedTime;
+    HANDLE_ERROR(cudaEventRecord(stopTime, 0));
+    HANDLE_ERROR(cudaEventSynchronize(stopTime));
+    HANDLE_ERROR(cudaEventElapsedTime(&elapsedTime, startTime, stopTime));
+    HANDLE_ERROR(cudaEventDestroy(startTime));
+    HANDLE_ERROR(cudaEventDestroy(stopTime));
+    return elapsedTime;
 }
