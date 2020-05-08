@@ -8,6 +8,7 @@
 
 #include "thrust_wrappers.h"
 #include "utils.h"
+#include "hashmap_utils.h"
 
 
 //ASSUMPTIONS 
@@ -25,49 +26,10 @@
 #define NO_EDGE 0
 #define BLOCKS_NUMBER 16
 #define THREADS_PER_BLOCK 128
-#define EMPTY_SLOT -1
 
-using namespace thrust::placeholders;
 using namespace std;
 
 bool DEBUG = false;
-
-struct hashMapSizesGenerator{
-    const float ratio;
-    hashMapSizesGenerator(float _ratio) : ratio(_ratio) {}
-    __host__ __device__ 
-   int operator()(const int &x) const {
-        if (x == 0) return 0;
-        int v = (int) (ratio * (x + 1));
-        v--;
-        v |= v >> 1;
-        v |= v >> 2;
-        v |= v >> 4;
-        v |= v >> 8;
-        v |= v >> 16;
-        v++;
-        return v;
-    }
-};
-
-struct isNotZero {
-  __host__ __device__
-  bool operator()(const int &x) const {
-    return x != 0;
-  }
-};
-
-__host__  __device__ int h1(int Ci) {
-    return 7 * Ci + 5;
-}
-
-__host__  __device__ int h2(int Ci) {
-    return 2 * Ci + 1; 
-}
-//size > 0 !!
-__host__  __device__ int doubleHash(int Ci, int itr, int size) { 
-    return (h1(Ci) + itr * h2(Ci)) % size; //maybe can be improved
-}
 
 
 __device__ void updateMaxModularity(int* maxC, float* maxDeltaMod, int newC, float newDeltaMod) {
@@ -75,44 +37,6 @@ __device__ void updateMaxModularity(int* maxC, float* maxDeltaMod, int newC, flo
         *maxC = newC;
         *maxDeltaMod = newDeltaMod;
     }
-}
-
-
-__device__ void hashMapInsert(int* hashComm, float* hashWeight, int offset, int size, int cj, float w) {
-    int pos, itr = 0;
-    do {
-        pos = offset + doubleHash(cj, itr, size);
-
-        if (hashComm[pos] == cj) {
-                atomicAdd(&hashWeight[pos], w); 
-        } else if (hashComm[pos] == EMPTY_SLOT) {
-            if (cj == atomicCAS(&hashComm[pos], EMPTY_SLOT, cj)) {
-                    atomicAdd(&hashWeight[pos], w); 
-            } 
-            else if (hashComm[pos] == cj) {
-                    atomicAdd(&hashWeight[pos], w); 
-            }
-        }
-        itr++;
-    } while (hashComm[pos] != cj);
-}
-
-void hashMapCreate(dvi& hashSize, dvi& hashOffset, dvi& hashComm, dvf& hashWeight) {        
-    hashOffset = dvi(hashSize.size() + 1); 
-    hashOffset[0] = 0;
-    thrust::inclusive_scan(hashSize.begin(), hashSize.end(), hashOffset.begin() + 1);
-
-    hashComm = dvi(hashOffset.back(), EMPTY_SLOT);
-    hashWeight = dvf(hashOffset.back(), 0);
-}
-
-__device__ int hashMapFind(int* hashComm, int offset, int size, int ci) {
-    int pos, itr = 0;
-    do {    
-        pos = offset + doubleHash(ci, itr, size);
-        itr++;
-    } while (hashComm[pos] != ci && hashComm[pos] != EMPTY_SLOT);
-    return pos;
 }
 
 
@@ -249,15 +173,15 @@ __global__ void initializeAcGPU(int n, int* C, float* k, float* ac) {
 
 void initializeUniqueCAndCGPU(int n, const dvi& C, dvi& uniqueC, int& c) {
     uniqueC = C;
-    thrust::sort(uniqueC.begin(), uniqueC.end());
-    thrust::unique(uniqueC.begin(), uniqueC.end());
+    thrust_sort(uniqueC);
+    thrust_unique(uniqueC);
     c = uniqueC.size();
 }
         
 
 
 __global__ void initializeDegreeGPU(int n, int* V, float* W, int* degree) {
-    for (int i = 0; i < n; ++i) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x) {
         int ctr = 0;
         for (int j = V[i]; j < V[i + 1]; ++j) {
             if (W[j] == NO_EDGE)
@@ -428,14 +352,14 @@ int main(int argc, char *argv[]) {
     startRecordingTime(startTime, stopTime);
  
     initialN = n;
-    wm = thrust::reduce(W.begin(), W.end(), (float) 0, thrust::plus<float>()) / 2;
+    wm = thrust_sum(W) / 2;
 
     finalC = dvi(n);
-    thrust::sequence(finalC.begin(), finalC.end()); 
+    thrust_sequence(finalC); 
 
     do { 
         C = dvi(n);
-        thrust::sequence(C.begin(), C.end()); 
+        thrust_sequence(C); 
 
         k = vf(n, 0);
         initializeKGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, 
@@ -444,8 +368,8 @@ int main(int argc, char *argv[]) {
                                                           ptr(k)); 
 
         
-        float ksum = thrust::reduce(k.begin(), k.end(), (float) 0, thrust::plus<float>());
         if (DEBUG) {
+            float ksum = thrust_sum(k);
             assert(abs(ksum - 2 * wm) < 0.0001);
         }
 
@@ -482,7 +406,7 @@ int main(int argc, char *argv[]) {
             
             
             dvi hashSize = dvi(n);
-            thrust::transform(degree.begin(), degree.end(), hashSize.begin(), hashMapSizesGenerator(1.5));
+            thrust_transform_hashmap_size(degree, hashSize, 1.5);
 
             dvi hashOffset;
             dvi hashComm;
@@ -509,7 +433,7 @@ int main(int argc, char *argv[]) {
             ac.assign(n, 0);
             initializeAcGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(k), ptr(ac));
             if (DEBUG) {
-                float acsum = thrust::reduce(ac.begin(), ac.end(), (float) 0, thrust::plus<float>());                                 
+                float acsum = thrust_sum(ac);                             
                 assert(abs(acsum - 2 * wm) < 0.0001);
             }
             
@@ -548,14 +472,14 @@ int main(int argc, char *argv[]) {
     
         dvi newID(n, 0);
         initializeNewIDGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(comSize), ptr(newID));
-        thrust::inclusive_scan(newID.begin(), newID.end(), newID.begin());
-        thrust::for_each(newID.begin(), newID.end(), _1 -= 1);
+        thrust_inclusive_scan(newID);
+        thrust_sub_for_each(newID, 1);
 
         dvi edgePos = comDegree;
-        thrust::inclusive_scan(edgePos.begin(), edgePos.end(), edgePos.begin());
+        thrust_inclusive_scan(edgePos);
 
         dvi vertexStart = comSize;
-        thrust::inclusive_scan(vertexStart.begin(), vertexStart.end(), vertexStart.begin());
+        thrust_inclusive_scan(vertexStart);
 
         dvi comm(n);
         initializeCommGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(comm), ptr(vertexStart));
@@ -579,13 +503,13 @@ int main(int argc, char *argv[]) {
         newW = dvf(newm, NO_EDGE);
 
       
-        dvi hashSize = dvi(newn, 0);      
-        thrust::copy_if(comDegree.begin(), comDegree.end(), comSize.begin(), hashSize.begin(), isNotZero());
+        dvi hashSize = dvi(newn);
+        thrust_copy_if_non_zero(comDegree, comSize, hashSize);   
 
         dvi hashOffset;
         dvi hashComm;
         dvf hashWeight;
-        thrust::transform(hashSize.begin(), hashSize.end(), hashSize.begin(), hashMapSizesGenerator(1.5));
+        thrust_transform_hashmap_size(hashSize, hashSize, 1.5);
         hashMapCreate(hashSize, hashOffset, hashComm, hashWeight);
        
         mergeCommunityFillHashMapGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, 

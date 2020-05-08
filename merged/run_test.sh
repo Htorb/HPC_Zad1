@@ -3,7 +3,7 @@ BRed='\033[1;31m'         # Red
 BGreen='\033[1;32m'       # Green
 Off='\033[0m'             # Text Reset
 
-rm gpulouvain
+make clean
 make
 
 echo "----NORMAL----"
