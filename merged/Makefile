@@ -1,5 +1,5 @@
 CC=/usr/local/cuda/bin/nvcc
-DFLAGS=#-g -G 
+DFLAGS=#g -G 
 OBJECTS=utils.o thrust_wrappers.o hashmap_utils.o main.o
 
 gpulouvain: $(OBJECTS) 

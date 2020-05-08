@@ -116,23 +116,25 @@ __global__ void calculate_modularity(int n,
                                         float* Q) {
     __shared__ float partials[THREADS_PER_BLOCK];
     int tid = threadIdx.x;
-    int step  = blockDim.x;
+    int bid = blockIdx.x;
+    int bdim =  blockDim.x;
+    int step = blockDim.x * gridDim.x;
 
     float a = 0;
-    for (int i = tid; i < n; i += step) {
+    for (int i = bid * bdim + tid; i < n; i += step) {
         for (int j = V[i]; j < V[i + 1]; ++j) {
             if (C[N[j]] == C[i]) {
                 a += W[j] / (2 * weights_sum);
             }
         }
     }
-    for (int i = tid; i < c; i += step) {
+    for (int i = bid * bdim + tid; i < c; i += step) {
         a -= ac[uniqueC[i]] * ac[uniqueC[i]] / (4 * weights_sum * weights_sum);
     }
     partials[tid] = a;
     __syncthreads();
 
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+    for (int s = bdim / 2; s > 0; s >>= 1) {
         if (tid < s) {
             partials[tid] += partials[tid + s];
         }
@@ -140,7 +142,7 @@ __global__ void calculate_modularity(int n,
     }
 
     if (tid == 0) {
-        *Q = partials[0];
+        Q[bid] = partials[0];
     }
 }
 
@@ -348,10 +350,10 @@ int main(int argc, char *argv[]) {
         //modularity optimisation phase
         initialize_uniqueC_and_C(n, C, uniqueC, c);
 
-        dvf dQc(1);
-        calculate_modularity<<<1, THREADS_PER_BLOCK>>>(n, c, ptr(V), ptr(N), ptr(W), ptr(C), 
+        dvf dQc(BLOCKS_NUMBER);
+        calculate_modularity<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, c, ptr(V), ptr(N), ptr(W), ptr(C), 
                                                         ptr(uniqueC), ptr(ac), weights_sum, ptr(dQc));
-        Qc = dQc[0];
+        Qc = thrust_sum(dQc);
         Qba = Qc;
 
         std::cerr << "modularity: " << Qc << std::endl;
@@ -386,10 +388,11 @@ int main(int argc, char *argv[]) {
             
             Qp = Qc;
             initialize_uniqueC_and_C(n, C, uniqueC, c);
-            dvf dQc(1);
-            calculate_modularity<<<1, THREADS_PER_BLOCK>>>(n, c, ptr(V), ptr(N), ptr(W),
-                                                        ptr(C), ptr(uniqueC), ptr(ac), weights_sum, ptr(dQc));
-            Qc = dQc[0];
+
+            dvf dQc(BLOCKS_NUMBER);
+            calculate_modularity<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, c, ptr(V), ptr(N), ptr(W), ptr(C), 
+                                                            ptr(uniqueC), ptr(ac), weights_sum, ptr(dQc));
+            Qc = thrust_sum(dQc);
             
             std::cerr << "modularity: " << Qc << std::endl;
 
