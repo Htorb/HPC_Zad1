@@ -11,25 +11,17 @@
 #include "hashmap_utils.h"
 
 
-//ASSUMPTIONS 
-// there is at least one edge with a positive weight
-
 // TODO bucket partition
-// TODO how can update modularity
-// TODO code grooming
 // TODO correct outer loop condition (from slack)
 
 
-#define ptr(a) \
-    thrust::raw_pointer_cast((a).data())
+#define ptr(a) thrust::raw_pointer_cast((a).data())
 
 #define NO_EDGE 0
+
 #define BLOCKS_NUMBER 16
 #define THREADS_PER_BLOCK 128
 
-using namespace std;
-
-bool DEBUG = false;
 
 __device__ void update_max_modularity(int* max_C, float* max_delta_modularity, int new_C, float new_delta_modulatiry) {
     if (new_delta_modulatiry > *max_delta_modularity || new_delta_modulatiry == *max_delta_modularity && new_C < *max_C) {
@@ -39,7 +31,7 @@ __device__ void update_max_modularity(int* max_C, float* max_delta_modularity, i
 }
 
 __global__ void compute_move(int n,
-                                int* new_comm, 
+                                int* new_C, 
                                 int* V,
                                 int* N, 
                                 float* W, 
@@ -47,15 +39,16 @@ __global__ void compute_move(int n,
                                 int* comm_size, 
                                 float* k, 
                                 float* ac, 
-                                const float wm,
+                                const float weights_sum,
                                 int* hash_offset,
                                 float* hash_weight,
                                 int* hash_comm) {
     __shared__ int partial_C_max[THREADS_PER_BLOCK];
     __shared__ float partial_delta_mod[THREADS_PER_BLOCK];
-    for (int i = blockIdx.x; i < n; i += gridDim.x) {
-        int tid = threadIdx.x;
-        int step = blockDim.x;
+    int tid = threadIdx.x;
+    int step = blockDim.x;
+
+    for (int i = blockIdx.x; i < n; i += gridDim.x) {    
         int offset = hash_offset[i];
         int size = hash_offset[i + 1] - offset;
         int ci = C[i];
@@ -82,8 +75,8 @@ __global__ void compute_move(int n,
 
             int new_C = hash_comm[pos];
             
-            float deltaMod = hash_weight[pos] / wm 
-                                + k[i] * (ac[ci] - k[i] - ac[new_C]) / (2 * wm * wm);
+            float deltaMod = hash_weight[pos] / weights_sum 
+                                + k[i] * (ac[ci] - k[i] - ac[new_C]) / (2 * weights_sum * weights_sum);
         
             if (comm_size[new_C] > 1 || comm_size[ci] > 1 || new_C < ci) {
                 update_max_modularity(&partial_C_max[tid], &partial_delta_mod[tid], new_C, deltaMod);
@@ -101,10 +94,10 @@ __global__ void compute_move(int n,
         if (tid == 0) {
             pos = hashmap_find(hash_comm, offset, size, ci);
 
-            if (partial_delta_mod[0] - hash_weight[pos] / wm > 0) {
-                new_comm[i] = partial_C_max[0];
+            if (partial_delta_mod[0] - hash_weight[pos] / weights_sum > 0) {
+                new_C[i] = partial_C_max[0];
             } else {
-                new_comm[i] = ci;
+                new_C[i] = ci;
             }
         }
     }
@@ -119,7 +112,7 @@ __global__ void calculate_modularity(int n,
                                         int* C,
                                         int* uniqueC, 
                                         float* ac, 
-                                        const float wm,
+                                        const float weights_sum,
                                         float* Q) {
     __shared__ float partials[THREADS_PER_BLOCK];
     int tid = threadIdx.x;
@@ -129,12 +122,12 @@ __global__ void calculate_modularity(int n,
     for (int i = tid; i < n; i += step) {
         for (int j = V[i]; j < V[i + 1]; ++j) {
             if (C[N[j]] == C[i]) {
-                a += W[j] / (2 * wm);
+                a += W[j] / (2 * weights_sum);
             }
         }
     }
     for (int i = tid; i < c; i += step) {
-        a -= ac[uniqueC[i]] * ac[uniqueC[i]] / (4 * wm * wm);
+        a -= ac[uniqueC[i]] * ac[uniqueC[i]] / (4 * weights_sum * weights_sum);
     }
     partials[tid] = a;
     __syncthreads();
@@ -145,6 +138,7 @@ __global__ void calculate_modularity(int n,
         }
         __syncthreads();
     }
+
     if (tid == 0) {
         *Q = partials[0];
     }
@@ -160,13 +154,11 @@ __global__ void initialize_k(int n, const int* V, const float* W, float* k) {
     }
 }
 
-
 __global__ void initialize_ac(int n, int* C, float* k, float* ac) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x) {
         atomicAdd(&ac[C[i]], k[i]);
     }
 }
-
 
 void initialize_uniqueC_and_C(int n, const dvi& C, dvi& uniqueC, int& c) {
     uniqueC = C;
@@ -175,8 +167,6 @@ void initialize_uniqueC_and_C(int n, const dvi& C, dvi& uniqueC, int& c) {
     c = uniqueC.size();
 }
         
-
-
 __global__ void initialize_degree(int n, int* V, float* W, int* degree) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x) {
         int ctr = 0;
@@ -189,21 +179,17 @@ __global__ void initialize_degree(int n, int* V, float* W, int* degree) {
     }
 }
 
-
 __global__ void initialize_comm_size(int n, int* C, int* comm_size) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x) {
         atomicAdd(&comm_size[C[i]], 1);
     }
 }
 
-
-
 __global__ void initialize_comm_degree(int n, int* degree, int* C, int* comDegree) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x) {
         atomicAdd(&comDegree[C[i]], degree[i]); 
     }
 }
-
 
 __global__ void initialize_newID(int n, int* C, int* comm_size, int* newID) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x) {
@@ -220,7 +206,6 @@ __global__ void initialize_comm(int n, int* C, int* comm, int* vertex_start) {
     }
 }
 
-
 __global__ void initialize_aggregated_V(int n, int* C, int* newID, int* edge_pos, int* aggregated_V) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x) {
         atomicCAS(&aggregated_V[newID[C[i]] + 1], 0, edge_pos[C[i]]);
@@ -236,8 +221,6 @@ __global__ void save_final_communities(int initial_n,
     }
 }
 
-
-
 __global__ void merge_community_fill_hashmap(int n,
                                                 int* V,
                                                 int* N,
@@ -249,7 +232,7 @@ __global__ void merge_community_fill_hashmap(int n,
                                                 int* hash_offset,
                                                 int* hash_comm,
                                                 float* hash_weight,
-                                                bool DEBUG) {
+                                                bool debug) {
     for (int idx = blockIdx.x; idx < n; idx += gridDim.x) {
         int tid = threadIdx.x;
         int step = blockDim.x;
@@ -263,7 +246,7 @@ __global__ void merge_community_fill_hashmap(int n,
             continue;
         }
 
-        if (DEBUG) {
+        if (debug) {
             assert(size >= degree[i]);
         }
 
@@ -275,7 +258,6 @@ __global__ void merge_community_fill_hashmap(int n,
         }   
     }
 }
-
 
 __global__ void merge_community_initialize_graph(int* hash_offset,
                                                     int* hash_comm,
@@ -306,17 +288,17 @@ int main(int argc, char *argv[]) {
     //commandline vars
     bool show_assignment = false;
     float threshold = 0;
-    string matrix_file;
+    std::string matrix_file;
+    bool debug = false;
 
-    //graph vars host
     int n; //number vertices 
     int m; //number of edges
     dvi V; //vertices
     dvi N; //neighbours
     dvf W; //weights
-    float wm; //sum of weights
+    float weights_sum; //sum of weights
     dvi C; //current clustering
-    dvi new_comm; //temporary array to store new communities
+    dvi new_C; //temporary array to store new communities
     dvf k; //sum of vertex's edges
     dvf ac; //sum of cluster edges
     int c; //number of communities
@@ -324,31 +306,27 @@ int main(int argc, char *argv[]) {
     dvi comm_size; //size of ech community
     dvi degree; //degree of each vertex
 
-    
-
     int initial_n; //number of vertices in the first iteration
     dvi finalC; //final clustering result 
-
 
     float Qba, Qp, Qc; //modularity before outermostloop iteration, before and after modularity optimisation respectively
     
     cudaEvent_t start_time, stop_time;
 
+    parse_command_line(show_assignment, threshold, matrix_file, argc, argv, debug);
 
-    parse_command_line(show_assignment, threshold, matrix_file, argc, argv, DEBUG);
-
-    vi tmpV;
-    vi tmpN;
-    vf tmpW;
-    read_graph_from_file(matrix_file, n, m, tmpV, tmpN, tmpW);
-    V = tmpV;
-    N = tmpN;
-    W = tmpW;
+    vi host_V;
+    vi host_N;
+    vf host_W;
+    read_graph_from_file(matrix_file, n, m, host_V, host_N, host_W);
+    V = host_V;
+    N = host_N;
+    W = host_W;
 
     start_recording_time(start_time, stop_time);
  
     initial_n = n;
-    wm = thrust_sum(W) / 2;
+    weights_sum = thrust_sum(W) / 2;
 
     finalC = dvi(n);
     thrust_sequence(finalC); 
@@ -358,48 +336,32 @@ int main(int argc, char *argv[]) {
         thrust_sequence(C); 
 
         k = vf(n, 0);
-        initialize_k<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, 
-                                                          ptr(V), 
-                                                          ptr(W), 
-                                                          ptr(k)); 
+        initialize_k<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(V), ptr(W), ptr(k)); 
 
-        
-        if (DEBUG) {
+        if (debug) {
             float ksum = thrust_sum(k);
-            assert(abs(ksum - 2 * wm) < 0.0001);
+            assert(abs(ksum - 2 * weights_sum) < 0.0001);
         }
 
         ac = k; 
         
         //modularity optimisation phase
-
         initialize_uniqueC_and_C(n, C, uniqueC, c);
 
-
         dvf dQc(1);
-        calculate_modularity<<<1, THREADS_PER_BLOCK>>>(n,
-                                                        c, 
-                                                        ptr(V),
-                                                        ptr(N),
-                                                        ptr(W),
-                                                        ptr(C),
-                                                        ptr(uniqueC),
-                                                        ptr(ac),
-                                                        wm,
-                                                        ptr(dQc));
+        calculate_modularity<<<1, THREADS_PER_BLOCK>>>(n, c, ptr(V), ptr(N), ptr(W), ptr(C), 
+                                                        ptr(uniqueC), ptr(ac), weights_sum, ptr(dQc));
         Qc = dQc[0];
         Qba = Qc;
 
-        
-        cerr << "modularity: " << Qc << endl;
+        std::cerr << "modularity: " << Qc << std::endl;
         do {
-            
-            new_comm = C;
+            new_C = C;
             comm_size = dvi(n, 0);
             initialize_comm_size<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(comm_size));
+
             degree = dvi(n, 0);
             initialize_degree<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(V), ptr(W), ptr(degree));
-            
             
             dvi hash_size = dvi(n);
             thrust_transform_hashmap_size(degree, hash_size, 1.5);
@@ -409,54 +371,31 @@ int main(int argc, char *argv[]) {
             dvf hash_weight;
             hashmap_create(hash_size, hash_offset, hash_comm, hash_weight);
 
-          
-            compute_move<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, 
-                                                                 ptr(new_comm), 
-                                                                 ptr(V), 
-                                                                 ptr(N), 
-                                                                 ptr(W), 
-                                                                 ptr(C), 
-                                                                 ptr(comm_size), 
-                                                                 ptr(k), 
-                                                                 ptr(ac), 
-                                                                 wm, 
-                                                                 ptr(hash_offset), 
-                                                                 ptr(hash_weight), 
-                                                                 ptr(hash_comm));
+            compute_move<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(new_C), ptr(V), ptr(N), ptr(W), 
+                                                                 ptr(C), ptr(comm_size), ptr(k), ptr(ac), 
+                                                                 weights_sum, ptr(hash_offset), ptr(hash_weight), ptr(hash_comm));
             
-            C = new_comm;
+            C = new_C;
 
             ac.assign(n, 0);
             initialize_ac<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(k), ptr(ac));
-            if (DEBUG) {
+            if (debug) {
                 float acsum = thrust_sum(ac);                             
-                assert(abs(acsum - 2 * wm) < 0.0001);
+                assert(abs(acsum - 2 * weights_sum) < 0.0001);
             }
             
-
             Qp = Qc;
             initialize_uniqueC_and_C(n, C, uniqueC, c);
             dvf dQc(1);
-            calculate_modularity<<<1, THREADS_PER_BLOCK>>>(n,
-                                                        c, 
-                                                        ptr(V),
-                                                        ptr(N),
-                                                        ptr(W),
-                                                        ptr(C),
-                                                        ptr(uniqueC),
-                                                        ptr(ac),
-                                                        wm,
-                                                        ptr(dQc));
+            calculate_modularity<<<1, THREADS_PER_BLOCK>>>(n, c, ptr(V), ptr(N), ptr(W),
+                                                        ptr(C), ptr(uniqueC), ptr(ac), weights_sum, ptr(dQc));
             Qc = dQc[0];
             
-            cerr << "modularity: " << Qc << endl;
+            std::cerr << "modularity: " << Qc << std::endl;
 
         } while (abs(Qc - Qp) > threshold);
-        
 
         //AGGREGATION PHASE
-
-        //maybe it is possible to merge this kernels?
         degree = dvi(n, 0); 
         initialize_degree<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(V), ptr(W), ptr(degree));
 
@@ -481,7 +420,6 @@ int main(int argc, char *argv[]) {
         initialize_comm<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(comm), ptr(vertex_start));
 
         //merge community
-        //new graph
         int aggregated_n; 
         int aggregated_m; 
         dvi aggregated_V;
@@ -494,11 +432,9 @@ int main(int argc, char *argv[]) {
         aggregated_V = dvi(aggregated_n + 1, 0);
         initialize_aggregated_V<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(newID), ptr(edge_pos), ptr(aggregated_V));
 
-      
         aggregated_N = dvi(aggregated_m, -1);
         aggregated_W = dvf(aggregated_m, NO_EDGE);
 
-      
         dvi hash_size = dvi(aggregated_n);
         thrust_copy_if_non_zero(comDegree, comm_size, hash_size);   
 
@@ -508,30 +444,14 @@ int main(int argc, char *argv[]) {
         thrust_transform_hashmap_size(hash_size, hash_size, 1.5);
         hashmap_create(hash_size, hash_offset, hash_comm, hash_weight);
        
-        merge_community_fill_hashmap<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, 
-                                                                            ptr(V), 
-                                                                            ptr(N), 
-                                                                            ptr(W), 
-                                                                            ptr(C), 
-                                                                            ptr(comm), 
-                                                                            ptr(degree), 
-                                                                            ptr(newID), 
-                                                                            ptr(hash_offset), 
-                                                                            ptr(hash_comm), 
-                                                                            ptr(hash_weight),
-                                                                            DEBUG);
+        merge_community_fill_hashmap<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(V), ptr(N),  ptr(W), ptr(C), ptr(comm), 
+                                ptr(degree), ptr(newID), ptr(hash_offset), ptr(hash_comm), ptr(hash_weight), debug);
 
-        merge_community_initialize_graph<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(ptr(hash_offset), 
-                                                                                ptr(hash_comm),
-                                                                                ptr(hash_weight), 
-                                                                                aggregated_n, 
-                                                                                ptr(aggregated_V), 
-                                                                                ptr(aggregated_N), 
-                                                                                ptr(aggregated_W));
+        merge_community_initialize_graph<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(ptr(hash_offset), ptr(hash_comm), 
+                                ptr(hash_weight), aggregated_n, ptr(aggregated_V),  ptr(aggregated_N), ptr(aggregated_W));
         
         save_final_communities<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(initial_n, ptr(finalC), ptr(C), ptr(newID));
 
-        //update graph
         n = aggregated_n; 
         m = aggregated_m; 
         V = aggregated_V;
@@ -539,15 +459,15 @@ int main(int argc, char *argv[]) {
         W = aggregated_W;
     } while (abs(Qc - Qba)> threshold);
 
-    cout << fixed << Qc << endl;
+    std::cout << std::fixed << Qc << std::endl;
 
-    float elapsedTime = stop_recording_time(start_time, stop_time);
-    printf("%3.1f ms\n", elapsedTime);
+    float elapsed_time = stop_recording_time(start_time, stop_time);
+    printf("%3.1f ms\n", elapsed_time);
 
     if (show_assignment) {
         hvi host_finalC = finalC;
-        vi tmpFinalC(ptr(host_finalC), ptr(host_finalC) + initial_n); 
-        print_clustering(initial_n, tmpFinalC);
+        vi stl_finalC(ptr(host_finalC), ptr(host_finalC) + initial_n); 
+        print_clustering(initial_n, stl_finalC);
     }
     return 0;
 }
