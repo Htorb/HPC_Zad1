@@ -6,17 +6,7 @@
 #include <cassert> 
 #include <string>
 
-#include <thrust/host_vector.h>
-#include <thrust/device_vector.h>
-#include <thrust/sequence.h>
-#include <thrust/device_ptr.h>
-#include <thrust/sort.h>
-#include <thrust/copy.h>
-#include <thrust/unique.h>
-#include <thrust/transform.h>
-#include <thrust/functional.h>
-
-#include "gpulouvain.h"
+#include "thrust_wrappers.h"
 #include "utils.h"
 
 
@@ -63,16 +53,11 @@
 #define THREADS_PER_BLOCK 128
 #define EMPTY_SLOT -1
 
+
 using namespace thrust::placeholders;
 using namespace std;
 
-using hvi = thrust::host_vector<int>;
-using hvf = thrust::host_vector<float>;
-using dvi = thrust::device_vector<int>;
-using dvf = thrust::device_vector<float>;
 
-
-//float ITR_MODULARITY_THRESHOLD = 0.1;
 bool DEBUG = false;
 
 
@@ -114,91 +99,6 @@ __host__  __device__ int doubleHash(int Ci, int itr, int size) {
 }
 
 
-void computeMove(int i,
-                    int n,
-                    hvi& newComm, 
-                    const hvi& V,
-                    const hvi& N, 
-                    const hvf& W, 
-                    const hvi& C,
-                    const hvi& comSize, 
-                    const hvf& k, 
-                    const hvf& ac, 
-                    const float wm,
-                    hvi& hashOffset,
-                    hvf& hashWeight,
-                    hvi& hashComm
-                ) {
-    int offset = hashOffset[i];
-    int size = hashOffset[i + 1] - offset;
-    int ci = C[i];
-    int itr, pos;
-
-    if (size == 0) {
-        newComm[i] = ci;
-        return;
-    }
-
-    for (int j = V[i]; j < V[i + 1]; ++j) {
-        if (W[j] == NO_EDGE)
-            break;
-
-        int cj = C[N[j]];
-        itr = 0;
-        do {
-            pos = offset + doubleHash(cj, itr, size);
-
-            if (hashComm[pos] == cj) {
-                if (N[j] != i) {
-                    hashWeight[pos] += W[j]; 
-                }
-            } else if (hashComm[pos] == EMPTY_SLOT) {
-                hashComm[pos] = cj;
-                if (N[j] != i) {
-                    hashWeight[pos] += W[j]; 
-                }
-            }
-            itr++;
-        } while (hashComm[pos] != cj);
-    }
-
-    int maxCj = n;
-    float maxDeltaAlmostMod = -1;
-
-    for (pos = offset; pos < offset + size; pos++) {
-        int cj = hashComm[pos];
-        if (cj == EMPTY_SLOT)
-            continue;
-        float wsum = hashWeight[pos];
-
-        float deltaAlmostMod = wsum / wm 
-            + k[i] * (ac[ci] - k[i] - ac[cj]) / (2 * wm * wm);
-
-        if (deltaAlmostMod > maxDeltaAlmostMod || deltaAlmostMod == maxDeltaAlmostMod && cj < maxCj) {
-            if (comSize[cj] > 1 || comSize[ci] > 1 || cj < ci) {
-                maxCj = cj;
-                maxDeltaAlmostMod = deltaAlmostMod;
-            }
-        }   
-    }
-
-    itr = 0;
-    do {    
-        pos = offset + doubleHash(ci, itr, size);
-        itr++;
-    } while (hashComm[pos] != ci && hashComm[pos] != EMPTY_SLOT);
-
-    float maxDeltaMod = maxDeltaAlmostMod - hashWeight[pos] / wm;
-
-    if (maxDeltaMod > 0) {
-        newComm[i] = maxCj;
-    } else {
-        newComm[i] = ci;
-    }
-}
-
-
-
 __device__ void updateMaxModularity(int* maxC, float* maxDeltaMod, int newC, float newDeltaMod) {
     if (newDeltaMod > *maxDeltaMod || newDeltaMod == *maxDeltaMod && newC < *maxC) {
         *maxC = newC;
@@ -206,6 +106,25 @@ __device__ void updateMaxModularity(int* maxC, float* maxDeltaMod, int newC, flo
     }
 }
 
+
+__device__ void hashMapInsert(int* hashComm, float* hashWeight, int offset, int size, int cj, float w) {
+    int pos, itr = 0;
+    do {
+        pos = offset + doubleHash(cj, itr, size);
+
+        if (hashComm[pos] == cj) {
+                atomicAdd(&hashWeight[pos], w); 
+        } else if (hashComm[pos] == EMPTY_SLOT) {
+            if (cj == atomicCAS(&hashComm[pos], EMPTY_SLOT, cj)) {
+                    atomicAdd(&hashWeight[pos], w); 
+            } 
+            else if (hashComm[pos] == cj) {
+                    atomicAdd(&hashWeight[pos], w); 
+            }
+        }
+        itr++;
+    } while (hashComm[pos] != cj);
+}
 
 
 __global__ void computeMoveGPU(int n,
@@ -229,7 +148,7 @@ __global__ void computeMoveGPU(int n,
         int offset = hashOffset[i];
         int size = hashOffset[i + 1] - offset;
         int ci = C[i];
-        int itr, pos;
+        int pos;
 
         if (size == 0) {
             if (tid == 0)
@@ -240,30 +159,9 @@ __global__ void computeMoveGPU(int n,
         for (int j = tid + V[i]; j < V[i + 1]; j += step) {
             if (W[j] == NO_EDGE)
                 break;
-
-            int cj = C[N[j]];
-            itr = 0;
-            do {
-                pos = offset + doubleHash(cj, itr, size);
-
-                if (hashComm[pos] == cj) {
-                    if (N[j] != i) {
-                        atomicAdd(&hashWeight[pos], W[j]); 
-                    }
-                } else if (hashComm[pos] == EMPTY_SLOT) {
-                    if (cj == atomicCAS(&hashComm[pos], EMPTY_SLOT, cj)) {
-                        if (N[j] != i) {
-                            atomicAdd(&hashWeight[pos], W[j]); 
-                        }
-                    } 
-                    else if (hashComm[pos] == cj) {
-                        if (N[j] != i) {
-                            atomicAdd(&hashWeight[pos], W[j]); 
-                        }
-                    }
-                }
-                itr++;
-            } while (hashComm[pos] != cj);
+            if (N[j] != i) {
+                hashMapInsert(hashComm, hashWeight, offset, size, C[N[j]], W[j]);
+            }
         }
         __syncthreads();
 
@@ -292,7 +190,7 @@ __global__ void computeMoveGPU(int n,
         }
 
         if (tid == 0) {
-            itr = 0;
+            int itr = 0;
             do {    
                 pos = offset + doubleHash(ci, itr, size);
                 itr++;
@@ -461,6 +359,8 @@ __global__ void saveFinalCommunitiesGPU(int initialN,
     }
 }
 
+
+
 __global__ void mergeCommunityFillHashMapGPU(int n,
                                                 int* V,
                                                 int* N,
@@ -481,7 +381,6 @@ __global__ void mergeCommunityFillHashMapGPU(int n,
         int newci = newID[C[i]];
         int offset = hashOffset[newci];
         int size = hashOffset[newci + 1] - offset;
-        int itr, pos;
 
         if (size == 0) {
             continue;
@@ -495,24 +394,7 @@ __global__ void mergeCommunityFillHashMapGPU(int n,
             if (W[j] == NO_EDGE)
                 break; 
 
-            int newcj = newID[C[N[j]]];
-
-            itr = 0;
-            do {
-                pos = offset + doubleHash(newcj, itr, size);
-    
-                if (hashComm[pos] == newcj) {
-                        atomicAdd(&hashWeight[pos], W[j]); 
-                } else if (hashComm[pos] == EMPTY_SLOT) {
-                    if (newcj == atomicCAS(&hashComm[pos], EMPTY_SLOT, newcj)) {
-                            atomicAdd(&hashWeight[pos], W[j]); 
-                    } 
-                    else if (hashComm[pos] == newcj) {
-                            atomicAdd(&hashWeight[pos], W[j]); 
-                    }
-                }
-                itr++;
-            } while (hashComm[pos] != newcj);
+            hashMapInsert(hashComm, hashWeight, offset, size, newID[C[N[j]]], W[j]);
         }   
     }
 }
@@ -759,7 +641,6 @@ int main(int argc, char *argv[]) {
         dnewW = dvf(newm, NO_EDGE);
 
       
-
         dvi dhashSize = dvi(newn, 0);      
         thrust::copy_if(dcomDegree.begin(), dcomDegree.end(), dcomSize.begin(), dhashSize.begin(), isNotZero());
 
@@ -770,10 +651,8 @@ int main(int argc, char *argv[]) {
         dhashOffset[0] = 0;
         thrust::inclusive_scan(dhashSize.begin(), dhashSize.end(), dhashOffset.begin() + 1);
 
-
         dvi dhashComm(dhashOffset.back(), EMPTY_SLOT);
         dvf dhashWeight(dhashOffset.back(), 0);
-
        
 
         mergeCommunityFillHashMapGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, 
@@ -799,7 +678,6 @@ int main(int argc, char *argv[]) {
 
         saveFinalCommunitiesGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(initialN, ptr(dfinalC), ptr(dC), ptr(dnewID));
 
-        
 
         //update graph
         n = newn; 
