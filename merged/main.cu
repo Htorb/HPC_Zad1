@@ -31,35 +31,33 @@ using namespace std;
 
 bool DEBUG = false;
 
-
-__device__ void updateMaxModularity(int* maxC, float* maxDeltaMod, int newC, float newDeltaMod) {
-    if (newDeltaMod > *maxDeltaMod || newDeltaMod == *maxDeltaMod && newC < *maxC) {
-        *maxC = newC;
-        *maxDeltaMod = newDeltaMod;
+__device__ void update_max_modularity(int* max_C, float* max_delta_modularity, int new_C, float new_delta_modulatiry) {
+    if (new_delta_modulatiry > *max_delta_modularity || new_delta_modulatiry == *max_delta_modularity && new_C < *max_C) {
+        *max_C = new_C;
+        *max_delta_modularity = new_delta_modulatiry;
     }
 }
 
-
-__global__ void computeMoveGPU(int n,
-                                int* newComm, 
+__global__ void compute_move(int n,
+                                int* new_comm, 
                                 int* V,
                                 int* N, 
                                 float* W, 
                                 int* C,
-                                int* comSize, 
+                                int* comm_size, 
                                 float* k, 
                                 float* ac, 
                                 const float wm,
-                                int* hashOffset,
-                                float* hashWeight,
-                                int* hashComm) {
-    __shared__ int partialCMax[THREADS_PER_BLOCK];
-    __shared__ float partialDeltaMod[THREADS_PER_BLOCK];
+                                int* hash_offset,
+                                float* hash_weight,
+                                int* hash_comm) {
+    __shared__ int partial_C_max[THREADS_PER_BLOCK];
+    __shared__ float partial_delta_mod[THREADS_PER_BLOCK];
     for (int i = blockIdx.x; i < n; i += gridDim.x) {
         int tid = threadIdx.x;
         int step = blockDim.x;
-        int offset = hashOffset[i];
-        int size = hashOffset[i + 1] - offset;
+        int offset = hash_offset[i];
+        int size = hash_offset[i + 1] - offset;
         int ci = C[i];
         int pos;
 
@@ -71,50 +69,49 @@ __global__ void computeMoveGPU(int n,
             if (W[j] == NO_EDGE)
                 break;
             if (N[j] != i) {
-                hashMapInsert(hashComm, hashWeight, offset, size, C[N[j]], W[j]);
+                hashmap_insert(hash_comm, hash_weight, offset, size, C[N[j]], W[j]);
             }
         }
         __syncthreads();
 
-        partialCMax[tid] = n;
-        partialDeltaMod[tid] = -1;
+        partial_C_max[tid] = n;
+        partial_delta_mod[tid] = -1;
         for (pos = offset + tid; pos < offset + size; pos += step) {
-            if (hashComm[pos] == EMPTY_SLOT)
+            if (hash_comm[pos] == EMPTY_SLOT)
                 continue;
 
-            int newC = hashComm[pos];
+            int new_C = hash_comm[pos];
             
-            float deltaMod = hashWeight[pos] / wm 
-                                + k[i] * (ac[ci] - k[i] - ac[newC]) / (2 * wm * wm);
+            float deltaMod = hash_weight[pos] / wm 
+                                + k[i] * (ac[ci] - k[i] - ac[new_C]) / (2 * wm * wm);
         
-            if (comSize[newC] > 1 || comSize[ci] > 1 || newC < ci) {
-                updateMaxModularity(&partialCMax[tid], &partialDeltaMod[tid], newC, deltaMod);
+            if (comm_size[new_C] > 1 || comm_size[ci] > 1 || new_C < ci) {
+                update_max_modularity(&partial_C_max[tid], &partial_delta_mod[tid], new_C, deltaMod);
             }
         }
         __syncthreads();
 
         for (int s = blockDim.x / 2; s > 0 ; s >>= 1) {
             if (tid < s) {
-                updateMaxModularity(&partialCMax[tid], &partialDeltaMod[tid], partialCMax[tid + s], partialDeltaMod[tid + s]);
+                update_max_modularity(&partial_C_max[tid], &partial_delta_mod[tid], partial_C_max[tid + s], partial_delta_mod[tid + s]);
             }
             __syncthreads();
         }
 
         if (tid == 0) {
-            pos = hashMapFind(hashComm, offset, size, ci);
+            pos = hashmap_find(hash_comm, offset, size, ci);
 
-            if (partialDeltaMod[0] - hashWeight[pos] / wm > 0) {
-                newComm[i] = partialCMax[0];
+            if (partial_delta_mod[0] - hash_weight[pos] / wm > 0) {
+                new_comm[i] = partial_C_max[0];
             } else {
-                newComm[i] = ci;
+                new_comm[i] = ci;
             }
         }
     }
 }
 
-
 //WARNING WORKS ONLY WITH ONE KERNEL
-__global__ void calculateModularityGPU(int n,
+__global__ void calculate_modularity(int n,
                                         int c,
                                         int* V,
                                         int* N, 
@@ -153,7 +150,7 @@ __global__ void calculateModularityGPU(int n,
     }
 }
 
-__global__ void initializeKGPU(int n, const int* V, const float* W, float* k) {
+__global__ void initialize_k(int n, const int* V, const float* W, float* k) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x) {
         for (int j = V[i]; j < V[i + 1]; ++j) {
             if (W[j] == NO_EDGE)
@@ -164,14 +161,14 @@ __global__ void initializeKGPU(int n, const int* V, const float* W, float* k) {
 }
 
 
-__global__ void initializeAcGPU(int n, int* C, float* k, float* ac) {
+__global__ void initialize_ac(int n, int* C, float* k, float* ac) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x) {
         atomicAdd(&ac[C[i]], k[i]);
     }
 }
 
 
-void initializeUniqueCAndCGPU(int n, const dvi& C, dvi& uniqueC, int& c) {
+void initialize_uniqueC_and_C(int n, const dvi& C, dvi& uniqueC, int& c) {
     uniqueC = C;
     thrust_sort(uniqueC);
     thrust_unique(uniqueC);
@@ -180,7 +177,7 @@ void initializeUniqueCAndCGPU(int n, const dvi& C, dvi& uniqueC, int& c) {
         
 
 
-__global__ void initializeDegreeGPU(int n, int* V, float* W, int* degree) {
+__global__ void initialize_degree(int n, int* V, float* W, int* degree) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x) {
         int ctr = 0;
         for (int j = V[i]; j < V[i + 1]; ++j) {
@@ -193,55 +190,55 @@ __global__ void initializeDegreeGPU(int n, int* V, float* W, int* degree) {
 }
 
 
-__global__ void initializeComSizeGPU(int n, int* C, int* comSize) {
+__global__ void initialize_comm_size(int n, int* C, int* comm_size) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x) {
-        atomicAdd(&comSize[C[i]], 1);
+        atomicAdd(&comm_size[C[i]], 1);
     }
 }
 
 
 
-__global__ void initializeComDegreeGPU(int n, int* degree, int* C, int* comDegree) {
+__global__ void initialize_comm_degree(int n, int* degree, int* C, int* comDegree) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x) {
         atomicAdd(&comDegree[C[i]], degree[i]); 
     }
 }
 
 
-__global__ void initializeNewIDGPU(int n, int* C, int* comSize, int* newID) {
+__global__ void initialize_newID(int n, int* C, int* comm_size, int* newID) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x) {
-        if (comSize[C[i]] != 0) {
+        if (comm_size[C[i]] != 0) {
             atomicCAS(&newID[C[i]], 0, 1);
         }
     }
 }
 
-__global__ void initializeCommGPU(int n, int* C, int* comm, int* vertexStart) {
+__global__ void initialize_comm(int n, int* C, int* comm, int* vertex_start) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x) {
-        int res = atomicSub(&vertexStart[C[i]], 1) - 1;
+        int res = atomicSub(&vertex_start[C[i]], 1) - 1;
         comm[res] = i; 
     }
 }
 
 
-__global__ void initializeNewVGPU(int n, int* C, int* newID, int* edgePos, int* newV) {
+__global__ void initialize_aggregated_V(int n, int* C, int* newID, int* edge_pos, int* aggregated_V) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x) {
-        atomicCAS(&newV[newID[C[i]] + 1], 0, edgePos[C[i]]);
+        atomicCAS(&aggregated_V[newID[C[i]] + 1], 0, edge_pos[C[i]]);
     }
 }
 
-__global__ void saveFinalCommunitiesGPU(int initialN,
+__global__ void save_final_communities(int initial_n,
                                         int* finalC,
                                         int* C,
                                         int* newID) {
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < initialN; i += blockDim.x * gridDim.x) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < initial_n; i += blockDim.x * gridDim.x) {
         finalC[i] = newID[C[finalC[i]]];
     }
 }
 
 
 
-__global__ void mergeCommunityFillHashMapGPU(int n,
+__global__ void merge_community_fill_hashmap(int n,
                                                 int* V,
                                                 int* N,
                                                 float* W,
@@ -249,18 +246,18 @@ __global__ void mergeCommunityFillHashMapGPU(int n,
                                                 int* comm,
                                                 int* degree,
                                                 int* newID,
-                                                int* hashOffset,
-                                                int* hashComm,
-                                                float* hashWeight,
+                                                int* hash_offset,
+                                                int* hash_comm,
+                                                float* hash_weight,
                                                 bool DEBUG) {
     for (int idx = blockIdx.x; idx < n; idx += gridDim.x) {
         int tid = threadIdx.x;
         int step = blockDim.x;
 
         int i = comm[idx];
-        int newci = newID[C[i]];
-        int offset = hashOffset[newci];
-        int size = hashOffset[newci + 1] - offset;
+        int new_ci = newID[C[i]];
+        int offset = hash_offset[new_ci];
+        int size = hash_offset[new_ci + 1] - offset;
 
         if (size == 0) {
             continue;
@@ -274,31 +271,31 @@ __global__ void mergeCommunityFillHashMapGPU(int n,
             if (W[j] == NO_EDGE)
                 break; 
 
-            hashMapInsert(hashComm, hashWeight, offset, size, newID[C[N[j]]], W[j]);
+            hashmap_insert(hash_comm, hash_weight, offset, size, newID[C[N[j]]], W[j]);
         }   
     }
 }
 
 
-__global__ void mergeCommunityInitializeGraphGPU(int* hashOffset,
-                                                    int* hashComm,
-                                                    float* hashWeight,
-                                                    int newn,
-                                                    int* newV,
-                                                    int* newN,
-                                                    float* newW) {
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < newn; i += blockDim.x * gridDim.x) {
-        int edgeId = newV[i];
-        for (int pos = hashOffset[i]; pos < hashOffset[i + 1]; ++pos) {
-            int newcj = hashComm[pos];
+__global__ void merge_community_initialize_graph(int* hash_offset,
+                                                    int* hash_comm,
+                                                    float* hash_weight,
+                                                    int aggregated_n,
+                                                    int* aggregated_V,
+                                                    int* aggregated_N,
+                                                    float* aggregated_W) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < aggregated_n; i += blockDim.x * gridDim.x) {
+        int edgeId = aggregated_V[i];
+        for (int pos = hash_offset[i]; pos < hash_offset[i + 1]; ++pos) {
+            int new_cj = hash_comm[pos];
 
-            if (newcj == EMPTY_SLOT) {
+            if (new_cj == EMPTY_SLOT) {
                 continue;
             }
-            float wsum = hashWeight[pos];
+            float weights_sum = hash_weight[pos];
 
-            newN[edgeId] = newcj;
-            newW[edgeId] = wsum;
+            aggregated_N[edgeId] = new_cj;
+            aggregated_W[edgeId] = weights_sum;
             edgeId++;
         }        
     }
@@ -307,9 +304,9 @@ __global__ void mergeCommunityInitializeGraphGPU(int* hashOffset,
 
 int main(int argc, char *argv[]) {
     //commandline vars
-    bool showAssignment = false;
+    bool show_assignment = false;
     float threshold = 0;
-    string matrixFile;
+    string matrix_file;
 
     //graph vars host
     int n; //number vertices 
@@ -319,39 +316,38 @@ int main(int argc, char *argv[]) {
     dvf W; //weights
     float wm; //sum of weights
     dvi C; //current clustering
-    dvi newComm; //temporary array to store new communities
+    dvi new_comm; //temporary array to store new communities
     dvf k; //sum of vertex's edges
     dvf ac; //sum of cluster edges
     int c; //number of communities
     dvi uniqueC; //list of unique communities ids
-    dvi comSize; //size of ech community
+    dvi comm_size; //size of ech community
     dvi degree; //degree of each vertex
 
     
 
-    int initialN; //number of vertices in the first iteration
+    int initial_n; //number of vertices in the first iteration
     dvi finalC; //final clustering result 
 
 
     float Qba, Qp, Qc; //modularity before outermostloop iteration, before and after modularity optimisation respectively
     
-    cudaEvent_t startTime, stopTime;
+    cudaEvent_t start_time, stop_time;
 
 
-
-    parseCommandline(showAssignment, threshold, matrixFile, argc, argv, DEBUG);
+    parse_command_line(show_assignment, threshold, matrix_file, argc, argv, DEBUG);
 
     vi tmpV;
     vi tmpN;
     vf tmpW;
-    readGraphFromFile(matrixFile, n, m, tmpV, tmpN, tmpW);
+    read_graph_from_file(matrix_file, n, m, tmpV, tmpN, tmpW);
     V = tmpV;
     N = tmpN;
     W = tmpW;
 
-    startRecordingTime(startTime, stopTime);
+    start_recording_time(start_time, stop_time);
  
-    initialN = n;
+    initial_n = n;
     wm = thrust_sum(W) / 2;
 
     finalC = dvi(n);
@@ -362,7 +358,7 @@ int main(int argc, char *argv[]) {
         thrust_sequence(C); 
 
         k = vf(n, 0);
-        initializeKGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, 
+        initialize_k<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, 
                                                           ptr(V), 
                                                           ptr(W), 
                                                           ptr(k)); 
@@ -377,11 +373,11 @@ int main(int argc, char *argv[]) {
         
         //modularity optimisation phase
 
-        initializeUniqueCAndCGPU(n, C, uniqueC, c);
+        initialize_uniqueC_and_C(n, C, uniqueC, c);
 
 
         dvf dQc(1);
-        calculateModularityGPU<<<1, THREADS_PER_BLOCK>>>(n,
+        calculate_modularity<<<1, THREADS_PER_BLOCK>>>(n,
                                                         c, 
                                                         ptr(V),
                                                         ptr(N),
@@ -398,40 +394,40 @@ int main(int argc, char *argv[]) {
         cerr << "modularity: " << Qc << endl;
         do {
             
-            newComm = C;
-            comSize = dvi(n, 0);
-            initializeComSizeGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(comSize));
+            new_comm = C;
+            comm_size = dvi(n, 0);
+            initialize_comm_size<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(comm_size));
             degree = dvi(n, 0);
-            initializeDegreeGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(V), ptr(W), ptr(degree));
+            initialize_degree<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(V), ptr(W), ptr(degree));
             
             
-            dvi hashSize = dvi(n);
-            thrust_transform_hashmap_size(degree, hashSize, 1.5);
+            dvi hash_size = dvi(n);
+            thrust_transform_hashmap_size(degree, hash_size, 1.5);
 
-            dvi hashOffset;
-            dvi hashComm;
-            dvf hashWeight;
-            hashMapCreate(hashSize, hashOffset, hashComm, hashWeight);
+            dvi hash_offset;
+            dvi hash_comm;
+            dvf hash_weight;
+            hashmap_create(hash_size, hash_offset, hash_comm, hash_weight);
 
           
-            computeMoveGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, 
-                                                                 ptr(newComm), 
+            compute_move<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, 
+                                                                 ptr(new_comm), 
                                                                  ptr(V), 
                                                                  ptr(N), 
                                                                  ptr(W), 
                                                                  ptr(C), 
-                                                                 ptr(comSize), 
+                                                                 ptr(comm_size), 
                                                                  ptr(k), 
                                                                  ptr(ac), 
                                                                  wm, 
-                                                                 ptr(hashOffset), 
-                                                                 ptr(hashWeight), 
-                                                                 ptr(hashComm));
+                                                                 ptr(hash_offset), 
+                                                                 ptr(hash_weight), 
+                                                                 ptr(hash_comm));
             
-            C = newComm;
+            C = new_comm;
 
             ac.assign(n, 0);
-            initializeAcGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(k), ptr(ac));
+            initialize_ac<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(k), ptr(ac));
             if (DEBUG) {
                 float acsum = thrust_sum(ac);                             
                 assert(abs(acsum - 2 * wm) < 0.0001);
@@ -439,9 +435,9 @@ int main(int argc, char *argv[]) {
             
 
             Qp = Qc;
-            initializeUniqueCAndCGPU(n, C, uniqueC, c);
+            initialize_uniqueC_and_C(n, C, uniqueC, c);
             dvf dQc(1);
-            calculateModularityGPU<<<1, THREADS_PER_BLOCK>>>(n,
+            calculate_modularity<<<1, THREADS_PER_BLOCK>>>(n,
                                                         c, 
                                                         ptr(V),
                                                         ptr(N),
@@ -462,57 +458,57 @@ int main(int argc, char *argv[]) {
 
         //maybe it is possible to merge this kernels?
         degree = dvi(n, 0); 
-        initializeDegreeGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(V), ptr(W), ptr(degree));
+        initialize_degree<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(V), ptr(W), ptr(degree));
 
         dvi comDegree(n, 0);
-        initializeComDegreeGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(degree), ptr(C), ptr(comDegree));
+        initialize_comm_degree<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(degree), ptr(C), ptr(comDegree));
 
-        comSize = dvi(n, 0);
-        initializeComSizeGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(comSize));
+        comm_size = dvi(n, 0);
+        initialize_comm_size<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(comm_size));
     
         dvi newID(n, 0);
-        initializeNewIDGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(comSize), ptr(newID));
+        initialize_newID<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(comm_size), ptr(newID));
         thrust_inclusive_scan(newID);
         thrust_sub_for_each(newID, 1);
 
-        dvi edgePos = comDegree;
-        thrust_inclusive_scan(edgePos);
+        dvi edge_pos = comDegree;
+        thrust_inclusive_scan(edge_pos);
 
-        dvi vertexStart = comSize;
-        thrust_inclusive_scan(vertexStart);
+        dvi vertex_start = comm_size;
+        thrust_inclusive_scan(vertex_start);
 
         dvi comm(n);
-        initializeCommGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(comm), ptr(vertexStart));
+        initialize_comm<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(comm), ptr(vertex_start));
 
         //merge community
         //new graph
-        int newn; 
-        int newm; 
-        dvi newV;
-        dvi newN; 
-        dvf newW;
+        int aggregated_n; 
+        int aggregated_m; 
+        dvi aggregated_V;
+        dvi aggregated_N; 
+        dvf aggregated_W;
 
-        newn = newID.back() + 1;
-        newm = edgePos.back();
+        aggregated_n = newID.back() + 1;
+        aggregated_m = edge_pos.back();
 
-        newV = dvi(newn + 1, 0);
-        initializeNewVGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(newID), ptr(edgePos), ptr(newV));
-
-      
-        newN = dvi(newm, -1);
-        newW = dvf(newm, NO_EDGE);
+        aggregated_V = dvi(aggregated_n + 1, 0);
+        initialize_aggregated_V<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(newID), ptr(edge_pos), ptr(aggregated_V));
 
       
-        dvi hashSize = dvi(newn);
-        thrust_copy_if_non_zero(comDegree, comSize, hashSize);   
+        aggregated_N = dvi(aggregated_m, -1);
+        aggregated_W = dvf(aggregated_m, NO_EDGE);
 
-        dvi hashOffset;
-        dvi hashComm;
-        dvf hashWeight;
-        thrust_transform_hashmap_size(hashSize, hashSize, 1.5);
-        hashMapCreate(hashSize, hashOffset, hashComm, hashWeight);
+      
+        dvi hash_size = dvi(aggregated_n);
+        thrust_copy_if_non_zero(comDegree, comm_size, hash_size);   
+
+        dvi hash_offset;
+        dvi hash_comm;
+        dvf hash_weight;
+        thrust_transform_hashmap_size(hash_size, hash_size, 1.5);
+        hashmap_create(hash_size, hash_offset, hash_comm, hash_weight);
        
-        mergeCommunityFillHashMapGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, 
+        merge_community_fill_hashmap<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, 
                                                                             ptr(V), 
                                                                             ptr(N), 
                                                                             ptr(W), 
@@ -520,38 +516,38 @@ int main(int argc, char *argv[]) {
                                                                             ptr(comm), 
                                                                             ptr(degree), 
                                                                             ptr(newID), 
-                                                                            ptr(hashOffset), 
-                                                                            ptr(hashComm), 
-                                                                            ptr(hashWeight),
+                                                                            ptr(hash_offset), 
+                                                                            ptr(hash_comm), 
+                                                                            ptr(hash_weight),
                                                                             DEBUG);
 
-        mergeCommunityInitializeGraphGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(ptr(hashOffset), 
-                                                                                ptr(hashComm),
-                                                                                ptr(hashWeight), 
-                                                                                newn, 
-                                                                                ptr(newV), 
-                                                                                ptr(newN), 
-                                                                                ptr(newW));
+        merge_community_initialize_graph<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(ptr(hash_offset), 
+                                                                                ptr(hash_comm),
+                                                                                ptr(hash_weight), 
+                                                                                aggregated_n, 
+                                                                                ptr(aggregated_V), 
+                                                                                ptr(aggregated_N), 
+                                                                                ptr(aggregated_W));
         
-        saveFinalCommunitiesGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(initialN, ptr(finalC), ptr(C), ptr(newID));
+        save_final_communities<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(initial_n, ptr(finalC), ptr(C), ptr(newID));
 
         //update graph
-        n = newn; 
-        m = newm; 
-        V = newV;
-        N = newN; 
-        W = newW;
+        n = aggregated_n; 
+        m = aggregated_m; 
+        V = aggregated_V;
+        N = aggregated_N; 
+        W = aggregated_W;
     } while (abs(Qc - Qba)> threshold);
 
     cout << fixed << Qc << endl;
 
-    float elapsedTime = stopRecordingTime(startTime, stopTime);
+    float elapsedTime = stop_recording_time(start_time, stop_time);
     printf("%3.1f ms\n", elapsedTime);
 
-    if (showAssignment) {
+    if (show_assignment) {
         hvi host_finalC = finalC;
-        vi tmpFinalC(ptr(host_finalC), ptr(host_finalC) + initialN); 
-        printClustering(initialN, tmpFinalC);
+        vi tmpFinalC(ptr(host_finalC), ptr(host_finalC) + initial_n); 
+        print_clustering(initial_n, tmpFinalC);
     }
     return 0;
 }
