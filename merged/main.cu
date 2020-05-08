@@ -22,44 +22,15 @@
 #define ptr(a) \
     thrust::raw_pointer_cast((a).data())
 
-#define TODEVICE \
-    dV = V; \
-    dN = N; \
-    dW = W; \
-    dC = C; \
-    dnewComm = newComm; \
-    dk = k; \
-    dac = ac; \
-    ddegree = degree; \
-    duniqueC = uniqueC; \
-    dcomSize = comSize; \
-    dfinalC = finalC; 
-
-#define TOHOST \
-    V = dV; \
-    N = dN; \
-    W = dW; \
-    C = dC; \
-    newComm = dnewComm; \
-    k = dk; \
-    ac = dac; \
-    degree = ddegree; \
-    uniqueC = duniqueC; \
-    comSize = dcomSize; \
-    finalC = dfinalC; 
-
 #define NO_EDGE 0
 #define BLOCKS_NUMBER 16
 #define THREADS_PER_BLOCK 128
 #define EMPTY_SLOT -1
 
-
 using namespace thrust::placeholders;
 using namespace std;
 
-
 bool DEBUG = false;
-
 
 struct hashMapSizesGenerator{
     const float ratio;
@@ -126,6 +97,24 @@ __device__ void hashMapInsert(int* hashComm, float* hashWeight, int offset, int 
     } while (hashComm[pos] != cj);
 }
 
+void hashMapCreate(dvi& hashSize, dvi& hashOffset, dvi& hashComm, dvf& hashWeight) {        
+    hashOffset = dvi(hashSize.size() + 1); 
+    hashOffset[0] = 0;
+    thrust::inclusive_scan(hashSize.begin(), hashSize.end(), hashOffset.begin() + 1);
+
+    hashComm = dvi(hashOffset.back(), EMPTY_SLOT);
+    hashWeight = dvf(hashOffset.back(), 0);
+}
+
+__device__ int hashMapFind(int* hashComm, int offset, int size, int ci) {
+    int pos, itr = 0;
+    do {    
+        pos = offset + doubleHash(ci, itr, size);
+        itr++;
+    } while (hashComm[pos] != ci && hashComm[pos] != EMPTY_SLOT);
+    return pos;
+}
+
 
 __global__ void computeMoveGPU(int n,
                                 int* newComm, 
@@ -151,8 +140,6 @@ __global__ void computeMoveGPU(int n,
         int pos;
 
         if (size == 0) {
-            if (tid == 0)
-                newComm[i] = ci;
             continue;
         }
 
@@ -190,12 +177,7 @@ __global__ void computeMoveGPU(int n,
         }
 
         if (tid == 0) {
-            int itr = 0;
-            do {    
-                pos = offset + doubleHash(ci, itr, size);
-                itr++;
-            } while (hashComm[pos] != ci && hashComm[pos] != EMPTY_SLOT);
-
+            pos = hashMapFind(hashComm, offset, size, ci);
 
             if (partialDeltaMod[0] - hashWeight[pos] / wm > 0) {
                 newComm[i] = partialCMax[0];
@@ -204,32 +186,6 @@ __global__ void computeMoveGPU(int n,
             }
         }
     }
-}
-
-float calculateModularity(  int n,
-                            int c,
-                            const hvi& V,
-                            const hvi& N, 
-                            const hvf& W, 
-                            const hvi& C,
-                            const hvi& uniqueC, 
-                            const hvf& ac, 
-                            const float wm) {
-    float Q = 0;
-    for (int i = 0; i < n; ++i) {
-        for (int j = V[i]; j < V[i + 1]; ++j) {
-            if (W[j] == NO_EDGE)
-                break; 
-            if (C[N[j]] == C[i]) {
-                Q += W[j] / 2 / wm;
-            }
-        }
-    }
-
-    for (int i = 0; i < c; ++i) {
-        Q -= ac[uniqueC[i]] * ac[uniqueC[i]] / (4 * wm * wm);
-    }
-    return Q;
 }
 
 
@@ -434,38 +390,24 @@ int main(int argc, char *argv[]) {
     //graph vars host
     int n; //number vertices 
     int m; //number of edges
-    hvi V; //vertices
-    hvi N; //neighbours
-    hvf W; //weights
+    dvi V; //vertices
+    dvi N; //neighbours
+    dvf W; //weights
     float wm; //sum of weights
-    hvi C; //current clustering
-    hvi newComm; //temporary array to store new communities
-    hvf k; //sum of vertex's edges
-    hvf ac; //sum of cluster edges
+    dvi C; //current clustering
+    dvi newComm; //temporary array to store new communities
+    dvf k; //sum of vertex's edges
+    dvf ac; //sum of cluster edges
     int c; //number of communities
-    hvi uniqueC; //list of unique communities ids
-    hvi comSize; //size of ech community
-    hvi degree; //degree of each vertex
+    dvi uniqueC; //list of unique communities ids
+    dvi comSize; //size of ech community
+    dvi degree; //degree of each vertex
 
     
 
     int initialN; //number of vertices in the first iteration
-    hvi finalC; //final clustering result 
+    dvi finalC; //final clustering result 
 
-    //graph vars device
-    dvi dV; 
-    dvi dN; 
-    dvf dW;
-    dvi dC; 
-    dvi dnewComm;
-    dvf dk; 
-    dvf dac;
-    dvi duniqueC; 
-    dvi dcomSize; 
-    dvi dfinalC;
-    dvi ddegree;
-
-    hashMapSizesGenerator getHashMapSize(1.5);
 
     float Qba, Qp, Qc; //modularity before outermostloop iteration, before and after modularity optimisation respectively
     
@@ -485,46 +427,44 @@ int main(int argc, char *argv[]) {
 
     startRecordingTime(startTime, stopTime);
  
-    TODEVICE
-
     initialN = n;
-    wm = thrust::reduce(dW.begin(), dW.end(), (float) 0, thrust::plus<float>()) / 2;
+    wm = thrust::reduce(W.begin(), W.end(), (float) 0, thrust::plus<float>()) / 2;
 
-    dfinalC = dvi(n);
-    thrust::sequence(dfinalC.begin(), dfinalC.end()); 
+    finalC = dvi(n);
+    thrust::sequence(finalC.begin(), finalC.end()); 
 
     do { 
-        dC = dvi(n);
-        thrust::sequence(dC.begin(), dC.end()); 
+        C = dvi(n);
+        thrust::sequence(C.begin(), C.end()); 
 
-        dk = dvf(n, 0);
+        k = vf(n, 0);
         initializeKGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, 
-                                                          ptr(dV), 
-                                                          ptr(dW), 
-                                                          ptr(dk)); 
+                                                          ptr(V), 
+                                                          ptr(W), 
+                                                          ptr(k)); 
 
         
-        float ksum = thrust::reduce(dk.begin(), dk.end(), (float) 0, thrust::plus<float>());
+        float ksum = thrust::reduce(k.begin(), k.end(), (float) 0, thrust::plus<float>());
         if (DEBUG) {
             assert(abs(ksum - 2 * wm) < 0.0001);
         }
 
-        dac = dk; 
+        ac = k; 
         
         //modularity optimisation phase
 
-        initializeUniqueCAndCGPU(n, dC, duniqueC, c);
+        initializeUniqueCAndCGPU(n, C, uniqueC, c);
 
 
         dvf dQc(1);
         calculateModularityGPU<<<1, THREADS_PER_BLOCK>>>(n,
                                                         c, 
-                                                        ptr(dV),
-                                                        ptr(dN),
-                                                        ptr(dW),
-                                                        ptr(dC),
-                                                        ptr(duniqueC),
-                                                        ptr(dac),
+                                                        ptr(V),
+                                                        ptr(N),
+                                                        ptr(W),
+                                                        ptr(C),
+                                                        ptr(uniqueC),
+                                                        ptr(ac),
                                                         wm,
                                                         ptr(dQc));
         Qc = dQc[0];
@@ -534,59 +474,57 @@ int main(int argc, char *argv[]) {
         cerr << "modularity: " << Qc << endl;
         do {
             
-            dnewComm = dC;
-            dcomSize = dvi(n, 0);
-            initializeComSizeGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(dC), ptr(dcomSize));
-            ddegree = dvi(n, 0);
-            initializeDegreeGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(dV), ptr(dW), ptr(ddegree));
+            newComm = C;
+            comSize = dvi(n, 0);
+            initializeComSizeGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(comSize));
+            degree = dvi(n, 0);
+            initializeDegreeGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(V), ptr(W), ptr(degree));
             
             
-            dvi dhashSize = dvi(n);
-            thrust::transform(ddegree.begin(), ddegree.end(), dhashSize.begin(), getHashMapSize);
-            
-            dvi dhashOffset = dvi(n + 1); //TODO move memory allocation up
-            dhashOffset[0] = 0;
-            thrust::inclusive_scan(dhashSize.begin(), dhashSize.end(), dhashOffset.begin() + 1);
+            dvi hashSize = dvi(n);
+            thrust::transform(degree.begin(), degree.end(), hashSize.begin(), hashMapSizesGenerator(1.5));
 
-            dvf dhashWeight(dhashOffset.back(), 0);
-            dvi dhashComm(dhashOffset.back(), EMPTY_SLOT);
-            
+            dvi hashOffset;
+            dvi hashComm;
+            dvf hashWeight;
+            hashMapCreate(hashSize, hashOffset, hashComm, hashWeight);
+
           
             computeMoveGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, 
-                                                                 ptr(dnewComm), 
-                                                                 ptr(dV), 
-                                                                 ptr(dN), 
-                                                                 ptr(dW), 
-                                                                 ptr(dC), 
-                                                                 ptr(dcomSize), 
-                                                                 ptr(dk), 
-                                                                 ptr(dac), 
+                                                                 ptr(newComm), 
+                                                                 ptr(V), 
+                                                                 ptr(N), 
+                                                                 ptr(W), 
+                                                                 ptr(C), 
+                                                                 ptr(comSize), 
+                                                                 ptr(k), 
+                                                                 ptr(ac), 
                                                                  wm, 
-                                                                 ptr(dhashOffset), 
-                                                                 ptr(dhashWeight), 
-                                                                 ptr(dhashComm));
+                                                                 ptr(hashOffset), 
+                                                                 ptr(hashWeight), 
+                                                                 ptr(hashComm));
             
-            dC = dnewComm;
+            C = newComm;
 
-            dac.assign(n, 0);
-            initializeAcGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(dC), ptr(dk), ptr(dac));
+            ac.assign(n, 0);
+            initializeAcGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(k), ptr(ac));
             if (DEBUG) {
-                float acsum = thrust::reduce(dac.begin(), dac.end(), (float) 0, thrust::plus<float>());                                 
+                float acsum = thrust::reduce(ac.begin(), ac.end(), (float) 0, thrust::plus<float>());                                 
                 assert(abs(acsum - 2 * wm) < 0.0001);
             }
             
 
             Qp = Qc;
-            initializeUniqueCAndCGPU(n, dC, duniqueC, c);
+            initializeUniqueCAndCGPU(n, C, uniqueC, c);
             dvf dQc(1);
             calculateModularityGPU<<<1, THREADS_PER_BLOCK>>>(n,
                                                         c, 
-                                                        ptr(dV),
-                                                        ptr(dN),
-                                                        ptr(dW),
-                                                        ptr(dC),
-                                                        ptr(duniqueC),
-                                                        ptr(dac),
+                                                        ptr(V),
+                                                        ptr(N),
+                                                        ptr(W),
+                                                        ptr(C),
+                                                        ptr(uniqueC),
+                                                        ptr(ac),
                                                         wm,
                                                         ptr(dQc));
             Qc = dQc[0];
@@ -599,106 +537,96 @@ int main(int argc, char *argv[]) {
         //AGGREGATION PHASE
 
         //maybe it is possible to merge this kernels?
-        ddegree = dvi(n, 0); 
-        initializeDegreeGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(dV), ptr(dW), ptr(ddegree));
+        degree = dvi(n, 0); 
+        initializeDegreeGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(V), ptr(W), ptr(degree));
 
-        dvi dcomDegree(n, 0);
-        initializeComDegreeGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(ddegree), ptr(dC), ptr(dcomDegree));
+        dvi comDegree(n, 0);
+        initializeComDegreeGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(degree), ptr(C), ptr(comDegree));
 
-        dcomSize = dvi(n, 0);
-        initializeComSizeGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(dC), ptr(dcomSize));
+        comSize = dvi(n, 0);
+        initializeComSizeGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(comSize));
     
-        dvi dnewID(n, 0);
-        initializeNewIDGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(dC), ptr(dcomSize), ptr(dnewID));
-        thrust::inclusive_scan(dnewID.begin(), dnewID.end(), dnewID.begin());
-        thrust::for_each(dnewID.begin(), dnewID.end(), _1 -= 1);
+        dvi newID(n, 0);
+        initializeNewIDGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(comSize), ptr(newID));
+        thrust::inclusive_scan(newID.begin(), newID.end(), newID.begin());
+        thrust::for_each(newID.begin(), newID.end(), _1 -= 1);
 
-        dvi dedgePos = dcomDegree;
-        thrust::inclusive_scan(dedgePos.begin(), dedgePos.end(), dedgePos.begin());
+        dvi edgePos = comDegree;
+        thrust::inclusive_scan(edgePos.begin(), edgePos.end(), edgePos.begin());
 
-        dvi dvertexStart = dcomSize;
-        thrust::inclusive_scan(dvertexStart.begin(), dvertexStart.end(), dvertexStart.begin());
+        dvi vertexStart = comSize;
+        thrust::inclusive_scan(vertexStart.begin(), vertexStart.end(), vertexStart.begin());
 
-        dvi dcomm(n);
-        initializeCommGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(dC), ptr(dcomm), ptr(dvertexStart));
+        dvi comm(n);
+        initializeCommGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(comm), ptr(vertexStart));
 
         //merge community
         //new graph
         int newn; 
         int newm; 
-        dvi dnewV;
-        dvi dnewN; 
-        dvf dnewW;
+        dvi newV;
+        dvi newN; 
+        dvf newW;
 
-        newn = dnewID.back() + 1;
-        newm = dedgePos.back();
+        newn = newID.back() + 1;
+        newm = edgePos.back();
 
-        dnewV = dvi(newn + 1, 0);
-        initializeNewVGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(dC), ptr(dnewID), ptr(dedgePos), ptr(dnewV));
-
-      
-        dnewN = dvi(newm, -1);
-        dnewW = dvf(newm, NO_EDGE);
+        newV = dvi(newn + 1, 0);
+        initializeNewVGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(newID), ptr(edgePos), ptr(newV));
 
       
-        dvi dhashSize = dvi(newn, 0);      
-        thrust::copy_if(dcomDegree.begin(), dcomDegree.end(), dcomSize.begin(), dhashSize.begin(), isNotZero());
+        newN = dvi(newm, -1);
+        newW = dvf(newm, NO_EDGE);
 
-        thrust::transform(dhashSize.begin(), dhashSize.end(), dhashSize.begin(), getHashMapSize);
-        
+      
+        dvi hashSize = dvi(newn, 0);      
+        thrust::copy_if(comDegree.begin(), comDegree.end(), comSize.begin(), hashSize.begin(), isNotZero());
 
-        dvi dhashOffset = dvi(newn + 1); //TODO move memory allocation up
-        dhashOffset[0] = 0;
-        thrust::inclusive_scan(dhashSize.begin(), dhashSize.end(), dhashOffset.begin() + 1);
-
-        dvi dhashComm(dhashOffset.back(), EMPTY_SLOT);
-        dvf dhashWeight(dhashOffset.back(), 0);
+        dvi hashOffset;
+        dvi hashComm;
+        dvf hashWeight;
+        thrust::transform(hashSize.begin(), hashSize.end(), hashSize.begin(), hashMapSizesGenerator(1.5));
+        hashMapCreate(hashSize, hashOffset, hashComm, hashWeight);
        
-
         mergeCommunityFillHashMapGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, 
-                                                                            ptr(dV), 
-                                                                            ptr(dN), 
-                                                                            ptr(dW), 
-                                                                            ptr(dC), 
-                                                                            ptr(dcomm), 
-                                                                            ptr(ddegree), 
-                                                                            ptr(dnewID), 
-                                                                            ptr(dhashOffset), 
-                                                                            ptr(dhashComm), 
-                                                                            ptr(dhashWeight),
+                                                                            ptr(V), 
+                                                                            ptr(N), 
+                                                                            ptr(W), 
+                                                                            ptr(C), 
+                                                                            ptr(comm), 
+                                                                            ptr(degree), 
+                                                                            ptr(newID), 
+                                                                            ptr(hashOffset), 
+                                                                            ptr(hashComm), 
+                                                                            ptr(hashWeight),
                                                                             DEBUG);
-        mergeCommunityInitializeGraphGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(ptr(dhashOffset), 
-                                                                                ptr(dhashComm),
-                                                                                ptr(dhashWeight), 
+
+        mergeCommunityInitializeGraphGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(ptr(hashOffset), 
+                                                                                ptr(hashComm),
+                                                                                ptr(hashWeight), 
                                                                                 newn, 
-                                                                                ptr(dnewV), 
-                                                                                ptr(dnewN), 
-                                                                                ptr(dnewW));
+                                                                                ptr(newV), 
+                                                                                ptr(newN), 
+                                                                                ptr(newW));
         
-
-        saveFinalCommunitiesGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(initialN, ptr(dfinalC), ptr(dC), ptr(dnewID));
-
+        saveFinalCommunitiesGPU<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(initialN, ptr(finalC), ptr(C), ptr(newID));
 
         //update graph
         n = newn; 
         m = newm; 
-        dV = dnewV;
-        dN = dnewN; 
-        dW = dnewW;
+        V = newV;
+        N = newN; 
+        W = newW;
     } while (abs(Qc - Qba)> threshold);
 
-    
     cout << fixed << Qc << endl;
 
     float elapsedTime = stopRecordingTime(startTime, stopTime);
     printf("%3.1f ms\n", elapsedTime);
 
-
-    finalC = dfinalC;
-    vi tmpFinalC(ptr(finalC), ptr(finalC) + initialN); 
-
     if (showAssignment) {
-        finalC = dfinalC;
+        hvi host_finalC = finalC;
+        vi tmpFinalC(ptr(host_finalC), ptr(host_finalC) + initialN); 
         printClustering(initialN, tmpFinalC);
     }
     return 0;
