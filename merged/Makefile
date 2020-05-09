@@ -7,7 +7,7 @@ gpulouvain: $(OBJECTS)
 	$(CC) $(OBJECTS) -o gpulouvain
 
 main.o:  main.cu
-	$(CC) $(OFLAGS) $(DFLAGS) -dc main.cu
+	$(CC) $(OFLAGS) -dc main.cu
 
 utils.o: utils.h utils.cu
 	$(CC) $(OFLAGS) $(DFLAGS) -dc utils.cu 

@@ -24,6 +24,38 @@
 #define BLOCKS_NUMBER 16
 #define THREADS_PER_BLOCK 128
 
+struct Bucket {
+    int from;
+    int to;
+
+    Bucket(int _from, int _to) : from(_from), to(_to) {};
+
+    __host__ __device__
+    bool operator()(const int &x) const {
+        return from <= x && x <= to;
+    }
+};
+
+
+struct StepPolicy {
+    int node_start;
+    int node_step;
+    int edge_start;
+    int edge_step;
+};
+
+ __device__ StepPolicy get_step_policy(int thread_id, int block_id, int block_dim, int grid_dim, int policy_nr) {
+     switch (policy_nr) {
+         case 0:
+            StepPolicy sp;
+            sp.node_start = block_id;
+            sp.node_step = grid_dim;
+            sp.edge_start = thread_id;
+            sp.edge_step = block_dim;
+            return sp;
+            break;
+     }
+ }
 
 __device__ void update_max_modularity(int* max_C, float* max_delta_modularity, int new_C, float new_delta_modulatiry) {
     if (new_delta_modulatiry > *max_delta_modularity || new_delta_modulatiry == *max_delta_modularity && new_C < *max_C) {
@@ -44,13 +76,16 @@ __global__ void compute_move(int n,
                                 const float weights_sum,
                                 int* hash_offset,
                                 float* hash_weight,
-                                int* hash_comm) {
+                                int* hash_comm,
+                                int policy_nr) {
     __shared__ int partial_C_max[THREADS_PER_BLOCK];
     __shared__ float partial_delta_mod[THREADS_PER_BLOCK];
     int tid = threadIdx.x;
     int step = blockDim.x;
 
-    for (int i = blockIdx.x; i < n; i += gridDim.x) {    
+    StepPolicy sp = get_step_policy(threadIdx.x, blockIdx.x, blockDim.x, gridDim.x, policy_nr);
+
+    for (int i = sp.node_start; i < n; i += sp.node_step) {    
         int offset = hash_offset[i];
         int size = hash_offset[i + 1] - offset;
         int ci = C[i];
@@ -60,7 +95,7 @@ __global__ void compute_move(int n,
             continue;
         }
 
-        for (int j = tid + V[i]; j < V[i + 1]; j += step) {
+        for (int j = sp.edge_start + V[i]; j < V[i + 1]; j += sp.edge_step) {
             if (W[j] == NO_EDGE)
                 break;
             if (N[j] != i) {
@@ -116,6 +151,7 @@ __global__ void calculate_modularity(int n,
                                         float* ac, 
                                         const float weights_sum,
                                         float* Q) {
+                                           
     __shared__ float partials[THREADS_PER_BLOCK];
     int tid = threadIdx.x;
     int bid = blockIdx.x;
@@ -131,6 +167,7 @@ __global__ void calculate_modularity(int n,
             }
         }
     }
+    
     for (int i = bid * bdim + tid; i < c; i += step) {
         a -= ac[uniqueC[i]] * ac[uniqueC[i]] / 4 / weights_sum / weights_sum;
         // printf("jestem: %d odejmuje: %f\n", i , ac[uniqueC[i]] * ac[uniqueC[i]] / 4 / weights_sum / weights_sum);
@@ -355,6 +392,7 @@ int main(int argc, char *argv[]) {
         calculate_modularity<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, c, ptr(V), ptr(N), ptr(W), ptr(C), 
                                                         ptr(uniqueC), ptr(ac), weights_sum, ptr(dQc));
         Qc = thrust_sum(dQc);
+
         Qba = Qc;
 
         std::cerr << "modularity: " << Qc << std::endl;
@@ -368,6 +406,8 @@ int main(int argc, char *argv[]) {
             
             dvi hash_size = dvi(n);
             thrust_transform_hashmap_size(degree, hash_size, 1.5);
+            
+
 
             dvi hash_offset;
             dvi hash_comm;
@@ -376,8 +416,10 @@ int main(int argc, char *argv[]) {
 
             compute_move<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(new_C), ptr(V), ptr(N), ptr(W), 
                                                                  ptr(C), ptr(comm_size), ptr(k), ptr(ac), 
-                                                                 weights_sum, ptr(hash_offset), ptr(hash_weight), ptr(hash_comm));
+                                                                 weights_sum, ptr(hash_offset), ptr(hash_weight), ptr(hash_comm), 0);
             
+
+
             C = new_C;
 
             ac.assign(n, 0);
@@ -394,10 +436,7 @@ int main(int argc, char *argv[]) {
             calculate_modularity<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, c, ptr(V), ptr(N), ptr(W), ptr(C), 
                                                             ptr(uniqueC), ptr(ac), weights_sum, ptr(dQc));
             Qc = thrust_sum(dQc);
-            // for (int i = 0; i < n; ++i) {
-            //     std::cerr << C[i] << " ";
-            // }
-            // std::cerr << std::endl;
+
             
             std::cerr << "modularity: " << Qc << std::endl;
 
@@ -454,10 +493,9 @@ int main(int argc, char *argv[]) {
        
         merge_community_fill_hashmap<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(V), ptr(N),  ptr(W), ptr(C), ptr(comm), 
                                 ptr(degree), ptr(newID), ptr(hash_offset), ptr(hash_comm), ptr(hash_weight), debug);
-
         merge_community_initialize_graph<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(ptr(hash_offset), ptr(hash_comm), 
                                 ptr(hash_weight), aggregated_n, ptr(aggregated_V),  ptr(aggregated_N), ptr(aggregated_W));
-        
+
         save_final_communities<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(initial_n, ptr(finalC), ptr(C), ptr(newID));
 
         n = aggregated_n; 
@@ -465,6 +503,7 @@ int main(int argc, char *argv[]) {
         V = aggregated_V;
         N = aggregated_N; 
         W = aggregated_W;
+        break;
     } while (abs(Qc - Qba)> threshold);
 
     std::cout << std::fixed << Qc << std::endl;
