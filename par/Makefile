@@ -1,6 +1,6 @@
 CC=/usr/local/cuda/bin/nvcc
 DFLAGS=#-g -G
-OFLAGS=-Xptxas -O3 #todo report how it improves speed (or not)
+OFLAGS=-Xptxas -O3#todo report how it improves speed (or not)
 OBJECTS=utils.o thrust_wrappers.o hashmap_utils.o main.o
 
 gpulouvain: $(OBJECTS) 

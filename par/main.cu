@@ -17,7 +17,7 @@
 
 #define NO_EDGE 0
 
-#define BLOCKS_NUMBER 64
+#define BLOCKS_NUMBER 512
 #define THREADS_PER_BLOCK 128
 
 
@@ -326,6 +326,8 @@ int main(int argc, char *argv[]) {
     vi stl_N;
     vf stl_W;
     read_graph_from_file(matrix_file, n, m, stl_V, stl_N, stl_W);
+    if (debug)
+        std::cerr << "finished data loading" << std::endl;
 
     start_recording_time(tmp_start_time, tmp_stop_time);
     V = stl_V;
@@ -343,6 +345,7 @@ int main(int argc, char *argv[]) {
     hvi host_indices = indices;
     hvi host_occurences = occurences;
     memory_transfer_time += stop_recording_time(tmp_start_time, tmp_stop_time);
+
 
     hvi host_V(n + 1);
 
@@ -369,7 +372,7 @@ int main(int argc, char *argv[]) {
     finalC = dvi(n);
     thrust_sequence(finalC); 
 
-    do { 
+    while (true) { 
         C = dvi(n);
         thrust_sequence(C); 
 
@@ -391,8 +394,9 @@ int main(int argc, char *argv[]) {
         calculate_modularity<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, c, ptr(V), ptr(N), ptr(W), ptr(C), 
                                                         ptr(uniqueC), ptr(ac), weights_sum, ptr(dQc));
         Qc = thrust_sum(dQc);
-        
-        std::cerr << "modularity: " << Qc << std::endl;
+        if (debug) {
+            std::cerr << "modularity: " << Qc << std::endl;
+        }
         do {
             new_C = C;
             comm_size = dvi(n, 0);
@@ -432,9 +436,10 @@ int main(int argc, char *argv[]) {
             calculate_modularity<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, c, ptr(V), ptr(N), ptr(W), ptr(C), 
                                                             ptr(uniqueC), ptr(ac), weights_sum, ptr(dQc));
             Qc = thrust_sum(dQc);
-
-            std::cerr << "modularity: " << Qc << std::endl;
-        } while (abs(Qc - Qp) > threshold);
+            if (debug) {
+                std::cerr << "modularity: " << Qc << std::endl;
+            }
+        } while (Qc - Qp > threshold);
 
         //AGGREGATION PHASE
         degree = dvi(n, 0); 
@@ -500,11 +505,9 @@ int main(int argc, char *argv[]) {
         V = aggregated_V;
         N = aggregated_N; 
         W = aggregated_W;
-        //break;
-    } while (true);
+    };
 
     std::cout << std::fixed << Qc << std::endl;
-
     float algorithm_time = stop_recording_time(start_time, stop_time);
     printf("%3.1f %3.1f\n", algorithm_time, memory_transfer_time);
 

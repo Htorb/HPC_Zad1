@@ -72,14 +72,15 @@ void read_graph_from_file( std::string& matrix_file,
     std::string line;
     while (std::getline(matrix_stream, line)) {
         if (line[0] != '%') {
-            std::stringstream(line) >> n >> n >> entries;
+            sscanf(line.c_str(), "%d %d %d", &n, &n, &entries);
             break;
         }
     }    
     for (int i = 0; i < entries; i++) {
         int v1, v2;
         float f;
-        matrix_stream >> v1 >> v2 >> f;
+        std::getline(matrix_stream, line);
+        sscanf(line.c_str(), "%d %d %f", &v1, &v2, &f);
         v1--;
         v2--;
         V.push_back(v1);
