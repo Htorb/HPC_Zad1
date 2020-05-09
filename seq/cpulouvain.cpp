@@ -205,7 +205,7 @@ void computeMove(int i,
 
     for (auto const& [cj, wsum] : hashMap) {
             float deltaAlmostMod = wsum / wm 
-                + k[i] * (ac[ci] - k[i] - ac[cj]) / (2 * wm * wm);
+                + k[i] * (ac[ci] - k[i] - ac[cj]) / 2 / wm / wm;
             // cerr << "node: " << i << " to: " << cj << " deltaAlmostMod: " << deltaAlmostMod << endl; 
 
             if (deltaAlmostMod > maxDeltaAlmostMod || deltaAlmostMod == maxDeltaAlmostMod && cj < maxCj) {
@@ -244,13 +244,13 @@ float calculateModularity(  int n,
             if (W[j] == NO_EDGE)
                 break; 
             if (C[N[j]] == C[i]) {
-                Q += W[j] / (2 * wm);
+                Q += W[j] / 2 / wm;
             }
         }
     }
 
     for (int i = 0; i < c; ++i) {
-        Q -= ac[uniqueC[i]] * ac[uniqueC[i]] / (4 * wm * wm);
+        Q -= ac[uniqueC[i]] * ac[uniqueC[i]] / 4 / wm / wm;
     }
     return Q;
 }
@@ -458,6 +458,9 @@ int main(int argc, char *argv[]) {
         vf newW;
 
         newn = newID.back();
+        if (newn == n) {
+            break;
+        }
         newm = edgePos.back();
 
         newV = vi(newn + 1, 0);
@@ -520,7 +523,7 @@ int main(int argc, char *argv[]) {
         V = newV;
         N = newN; 
         W = newW;
-    } while (abs(Qc - Qba)> threshold);
+    } while (true);
 
     auto endTime = chrono::steady_clock::now();
     

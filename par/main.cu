@@ -5,7 +5,7 @@
 #include <set>
 #include <cassert> 
 #include <string>
-#include <iomanip> //todo remove
+#include <iomanip> 
 
 
 #include "thrust_wrappers.h"
@@ -13,28 +13,12 @@
 #include "hashmap_utils.h"
 
 
-// TODO bucket partition
-// TODO correct outer loop condition (from slack)
-
-
 #define ptr(a) thrust::raw_pointer_cast((a).data())
 
 #define NO_EDGE 0
 
-#define BLOCKS_NUMBER 16
+#define BLOCKS_NUMBER 64
 #define THREADS_PER_BLOCK 128
-
-struct Bucket {
-    int from;
-    int to;
-
-    Bucket(int _from, int _to) : from(_from), to(_to) {};
-
-    __host__ __device__
-    bool operator()(const int &x) const {
-        return from <= x && x <= to;
-    }
-};
 
 
 struct StepPolicy {
@@ -44,18 +28,6 @@ struct StepPolicy {
     int edge_step;
 };
 
- __device__ StepPolicy get_step_policy(int thread_id, int block_id, int block_dim, int grid_dim, int policy_nr) {
-     switch (policy_nr) {
-         case 0:
-            StepPolicy sp;
-            sp.node_start = block_id;
-            sp.node_step = grid_dim;
-            sp.edge_start = thread_id;
-            sp.edge_step = block_dim;
-            return sp;
-            break;
-     }
- }
 
 __device__ void update_max_modularity(int* max_C, float* max_delta_modularity, int new_C, float new_delta_modulatiry) {
     if (new_delta_modulatiry > *max_delta_modularity || new_delta_modulatiry == *max_delta_modularity && new_C < *max_C) {
@@ -63,6 +35,7 @@ __device__ void update_max_modularity(int* max_C, float* max_delta_modularity, i
         *max_delta_modularity = new_delta_modulatiry;
     }
 }
+
 
 __global__ void compute_move(int n,
                                 int* new_C, 
@@ -76,16 +49,13 @@ __global__ void compute_move(int n,
                                 const float weights_sum,
                                 int* hash_offset,
                                 float* hash_weight,
-                                int* hash_comm,
-                                int policy_nr) {
+                                int* hash_comm) {
     __shared__ int partial_C_max[THREADS_PER_BLOCK];
     __shared__ float partial_delta_mod[THREADS_PER_BLOCK];
     int tid = threadIdx.x;
     int step = blockDim.x;
 
-    StepPolicy sp = get_step_policy(threadIdx.x, blockIdx.x, blockDim.x, gridDim.x, policy_nr);
-
-    for (int i = sp.node_start; i < n; i += sp.node_step) {    
+    for (int i = blockIdx.x; i < n; i += gridDim.x) {    
         int offset = hash_offset[i];
         int size = hash_offset[i + 1] - offset;
         int ci = C[i];
@@ -95,7 +65,7 @@ __global__ void compute_move(int n,
             continue;
         }
 
-        for (int j = sp.edge_start + V[i]; j < V[i + 1]; j += sp.edge_step) {
+        for (int j = tid + V[i]; j < V[i + 1]; j += blockDim.x) {
             if (W[j] == NO_EDGE)
                 break;
             if (N[j] != i) {
@@ -140,7 +110,6 @@ __global__ void compute_move(int n,
     }
 }
 
-//WARNING WORKS ONLY WITH ONE KERNEL
 __global__ void calculate_modularity(int n,
                                         int c,
                                         int* V,
@@ -163,14 +132,12 @@ __global__ void calculate_modularity(int n,
         for (int j = V[i]; j < V[i + 1]; ++j) {
             if (C[N[j]] == C[i]) {
                 a += W[j] / 2 / weights_sum;
-                // printf("jestem: %d dodaje: %f\n", i , W[j] / 2 / weights_sum);
             }
         }
     }
     
     for (int i = bid * bdim + tid; i < c; i += step) {
         a -= ac[uniqueC[i]] * ac[uniqueC[i]] / 4 / weights_sum / weights_sum;
-        // printf("jestem: %d odejmuje: %f\n", i , ac[uniqueC[i]] * ac[uniqueC[i]] / 4 / weights_sum / weights_sum);
     }
     partials[tid] = a;
     __syncthreads();
@@ -324,7 +291,6 @@ __global__ void merge_community_initialize_graph(int* hash_offset,
 
 
 int main(int argc, char *argv[]) {
-    //commandline vars
     bool show_assignment = false;
     float threshold = 0;
     std::string matrix_file;
@@ -348,7 +314,7 @@ int main(int argc, char *argv[]) {
     int initial_n; //number of vertices in the first iteration
     dvi finalC; //final clustering result 
 
-    float Qba, Qp, Qc; //modularity before outermostloop iteration, before and after modularity optimisation respectively
+    float Qp, Qc; //modularity before outermostloop iteration, before and after modularity optimisation respectively
     
     cudaEvent_t start_time, stop_time;
 
@@ -392,9 +358,7 @@ int main(int argc, char *argv[]) {
         calculate_modularity<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, c, ptr(V), ptr(N), ptr(W), ptr(C), 
                                                         ptr(uniqueC), ptr(ac), weights_sum, ptr(dQc));
         Qc = thrust_sum(dQc);
-
-        Qba = Qc;
-
+        
         std::cerr << "modularity: " << Qc << std::endl;
         do {
             new_C = C;
@@ -413,12 +377,11 @@ int main(int argc, char *argv[]) {
             dvi hash_comm;
             dvf hash_weight;
             hashmap_create(hash_size, hash_offset, hash_comm, hash_weight);
+            
 
             compute_move<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(new_C), ptr(V), ptr(N), ptr(W), 
                                                                  ptr(C), ptr(comm_size), ptr(k), ptr(ac), 
-                                                                 weights_sum, ptr(hash_offset), ptr(hash_weight), ptr(hash_comm), 0);
-            
-
+                                                                 weights_sum, ptr(hash_offset), ptr(hash_weight), ptr(hash_comm));
 
             C = new_C;
 
@@ -437,9 +400,7 @@ int main(int argc, char *argv[]) {
                                                             ptr(uniqueC), ptr(ac), weights_sum, ptr(dQc));
             Qc = thrust_sum(dQc);
 
-            
             std::cerr << "modularity: " << Qc << std::endl;
-
         } while (abs(Qc - Qp) > threshold);
 
         //AGGREGATION PHASE
@@ -466,7 +427,6 @@ int main(int argc, char *argv[]) {
         dvi comm(n);
         initialize_comm<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(comm), ptr(vertex_start));
 
-        //merge community
         int aggregated_n; 
         int aggregated_m; 
         dvi aggregated_V;
@@ -474,6 +434,10 @@ int main(int argc, char *argv[]) {
         dvf aggregated_W;
 
         aggregated_n = newID.back() + 1;
+        if (aggregated_n == n) { //nothing changed
+            break;
+        }
+
         aggregated_m = edge_pos.back();
 
         aggregated_V = dvi(aggregated_n + 1, 0);
@@ -503,8 +467,8 @@ int main(int argc, char *argv[]) {
         V = aggregated_V;
         N = aggregated_N; 
         W = aggregated_W;
-        break;
-    } while (abs(Qc - Qba)> threshold);
+        //break;
+    } while (true);
 
     std::cout << std::fixed << Qc << std::endl;
 
@@ -518,24 +482,3 @@ int main(int argc, char *argv[]) {
     }
     return 0;
 }
-
-
-// struct Bucket {
-//     int from;
-//     int to;
-
-//     Bucket(int _from, int _to) : from(_from), to(_to) {};
-
-//     __host__ __device__
-//     bool operator()(const int &x) const {
-//         return from <= x && x <= to;
-//     }
-// };
-
-// dvi reorder(n);
-// thrust_sequence(reorder);
-// degree_copy = degree;
-// thrust::partition(thrust::make_zip_iterator(thrust::make_tuple(degree_copy.begin(), reoreder.begin())),
-//                     thrust::make_zip_iterator(thrust::make_tuple(degree_copy.end(), reorder.end())),
-//                     degree_copy.begin(),
-//                     Bucket(3,7));

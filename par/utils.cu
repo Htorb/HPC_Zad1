@@ -3,10 +3,11 @@
 #include <set>
 #include <algorithm>  
 #include <fstream>
+#include <stdlib.h>
+#include <sstream>
 
 #include "utils.h"
 #include "helpers.h"
-
 
 
 
@@ -63,12 +64,18 @@ void read_graph_from_file( std::string& matrix_file,
                         int& m,
                         vi& V, 
                         vi& N,
-                        vf& W) {
+                        vf& W) {    
     std::ifstream matrix_stream;
     matrix_stream.open(matrix_file);
     int entries = 0;
-    matrix_stream >> n >> n >> entries;
     
+    std::string line;
+    while (std::getline(matrix_stream, line)) {
+        if (line[0] != '%') {
+            std::stringstream(line) >> n >> n >> entries;
+            break;
+        }
+    }    
     m = 0;
     std::vector<tr> tmp;
     for (int i = 0; i < entries; i++) {
@@ -84,7 +91,10 @@ void read_graph_from_file( std::string& matrix_file,
         } 
     }
     
+    //todo check if sorting is fast
+    std::cerr << "starting sort" << std::endl;
     std::sort(tmp.begin(), tmp.end());
+    std::cerr << "finished sort" << std::endl;
 
     V = vi(n + 1, 0);
     N = vi(m, 0);
