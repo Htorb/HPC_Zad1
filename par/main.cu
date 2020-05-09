@@ -317,6 +317,8 @@ int main(int argc, char *argv[]) {
     float Qp, Qc; //modularity before outermostloop iteration, before and after modularity optimisation respectively
     
     cudaEvent_t start_time, stop_time;
+    cudaEvent_t tmp_start_time, tmp_stop_time;
+    float memory_transfer_time = 0;
 
     parse_command_line(show_assignment, threshold, matrix_file, argc, argv, debug);
 
@@ -324,9 +326,12 @@ int main(int argc, char *argv[]) {
     vi stl_N;
     vf stl_W;
     read_graph_from_file(matrix_file, n, m, stl_V, stl_N, stl_W);
+
+    start_recording_time(tmp_start_time, tmp_stop_time);
     V = stl_V;
     N = stl_N;
     W = stl_W;
+    memory_transfer_time += stop_recording_time(tmp_start_time, tmp_stop_time);
 
     thrust_sort_graph(V, N, W);
     dvi just_ones(m, 1);
@@ -334,8 +339,11 @@ int main(int argc, char *argv[]) {
     dvi occurences(n);
     thrust_reduce_by_key(V, just_ones, indices, occurences);
 
+    start_recording_time(tmp_start_time, tmp_stop_time);
     hvi host_indices = indices;
     hvi host_occurences = occurences;
+    memory_transfer_time += stop_recording_time(tmp_start_time, tmp_stop_time);
+
     hvi host_V(n + 1);
 
     host_V[0] = 0;
@@ -350,11 +358,11 @@ int main(int argc, char *argv[]) {
             host_V[i + 1] = host_V[i];
         }
     }
-
+    start_recording_time(tmp_start_time, tmp_stop_time);
     V = host_V;
+    memory_transfer_time += stop_recording_time(tmp_start_time, tmp_stop_time);
 
     start_recording_time(start_time, stop_time);
- 
     initial_n = n;
     weights_sum = thrust_sum(W) / 2;
 
@@ -497,8 +505,8 @@ int main(int argc, char *argv[]) {
 
     std::cout << std::fixed << Qc << std::endl;
 
-    float elapsed_time = stop_recording_time(start_time, stop_time);
-    printf("%3.1f ms\n", elapsed_time);
+    float algorithm_time = stop_recording_time(start_time, stop_time);
+    printf("%3.1f %3.1f\n", algorithm_time, memory_transfer_time);
 
     if (show_assignment) {
         hvi host_finalC = finalC;
