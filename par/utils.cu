@@ -76,41 +76,22 @@ void read_graph_from_file( std::string& matrix_file,
             break;
         }
     }    
-    m = 0;
-    std::vector<tr> tmp;
     for (int i = 0; i < entries; i++) {
         int v1, v2;
         float f;
         matrix_stream >> v1 >> v2 >> f;
-
-        m++;
-        tmp.push_back(tr(pi(v1 - 1,v2 - 1),f));
+        v1--;
+        v2--;
+        V.push_back(v1);
+        N.push_back(v2);
+        W.push_back(f);
         if (v1 != v2) {
-            m++;
-            tmp.push_back(tr(pi(v2 - 1,v1 - 1),f));
+            V.push_back(v2);
+            N.push_back(v1);
+            W.push_back(f);
         } 
     }
-    
-    //todo check if sorting is fast
-    std::cerr << "starting sort" << std::endl;
-    std::sort(tmp.begin(), tmp.end());
-    std::cerr << "finished sort" << std::endl;
-
-    V = vi(n + 1, 0);
-    N = vi(m, 0);
-    W = vf(m, 0);
-
-    int v_idx = 0;
-    for (size_t i = 0; i < tmp.size(); i++) {
-        while (v_idx <= tmp[i].first.first) {
-            V[v_idx++] = i;
-        }
-        N[i] = tmp[i].first.second;
-        W[i] = tmp[i].second;
-    }
-    while (v_idx < n + 1) {
-        V[v_idx++] = m;
-    }
+    m = W.size();
 }
 
 void start_recording_time(cudaEvent_t& start_time, cudaEvent_t& stop_time) {

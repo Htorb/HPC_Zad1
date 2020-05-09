@@ -320,13 +320,40 @@ int main(int argc, char *argv[]) {
 
     parse_command_line(show_assignment, threshold, matrix_file, argc, argv, debug);
 
-    vi host_V;
-    vi host_N;
-    vf host_W;
-    read_graph_from_file(matrix_file, n, m, host_V, host_N, host_W);
+    vi stl_V;
+    vi stl_N;
+    vf stl_W;
+    read_graph_from_file(matrix_file, n, m, stl_V, stl_N, stl_W);
+    V = stl_V;
+    N = stl_N;
+    W = stl_W;
+
+    std::cerr << "start sorting" << std::endl;
+    thrust::sort_by_key(V.begin(), V.end(), thrust::make_zip_iterator(make_tuple( V.begin(), N.begin(), W.begin())));
+    dvi just_ones(m, 1);
+    dvi indices(n); 
+    dvi occurences(n);
+    thrust::reduce_by_key(V.begin(), V.end(), just_ones.begin(), indices.begin(), occurences.begin());
+
+    hvi host_indices = indices;
+    hvi host_occurences = occurences;
+    hvi host_V(n + 1);
+
+    host_V[0] = 0;
+
+    int ptr = 0;
+    for (int i = 0; i < n; i++) {
+        if (host_indices[ptr] == i) {
+            host_V[i + 1] = host_V[i] + host_occurences[ptr];
+            ptr++;
+        }
+        else {
+            host_V[i + 1] = host_V[i];
+        }
+    }
+
     V = host_V;
-    N = host_N;
-    W = host_W;
+    std::cerr << "sorted" << std::endl;
 
     start_recording_time(start_time, stop_time);
  
