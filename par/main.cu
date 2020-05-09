@@ -328,12 +328,11 @@ int main(int argc, char *argv[]) {
     N = stl_N;
     W = stl_W;
 
-    std::cerr << "start sorting" << std::endl;
-    thrust::sort_by_key(V.begin(), V.end(), thrust::make_zip_iterator(make_tuple( V.begin(), N.begin(), W.begin())));
+    thrust_sort_graph(V, N, W);
     dvi just_ones(m, 1);
     dvi indices(n); 
     dvi occurences(n);
-    thrust::reduce_by_key(V.begin(), V.end(), just_ones.begin(), indices.begin(), occurences.begin());
+    thrust_reduce_by_key(V, just_ones, indices, occurences);
 
     hvi host_indices = indices;
     hvi host_occurences = occurences;
@@ -353,7 +352,6 @@ int main(int argc, char *argv[]) {
     }
 
     V = host_V;
-    std::cerr << "sorted" << std::endl;
 
     start_recording_time(start_time, stop_time);
  

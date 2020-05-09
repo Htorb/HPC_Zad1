@@ -64,3 +64,11 @@ void thrust_transform_hashmap_size(dvi& from, dvi& to, float frac) {
 void thrust_sub_for_each(dvi& v, int val) {
     thrust::for_each(v.begin(), v.end(), _1 -= val);
 }
+
+void thrust_sort_graph(dvi& V, dvi& N, dvf& W) {
+    thrust::sort_by_key(V.begin(), V.end(), thrust::make_zip_iterator(make_tuple( V.begin(), N.begin(), W.begin())));
+}
+
+void thrust_reduce_by_key(dvi& A, dvi& B, dvi& C, dvi& D) {
+    thrust::reduce_by_key(A.begin(), A.end(), B.begin(), C.begin(), D.begin());
+}

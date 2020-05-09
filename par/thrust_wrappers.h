@@ -25,6 +25,8 @@ void thrust_inclusive_scan_with_shift(dvi&, dvi&, int);
 void thrust_copy_if_non_zero(dvi&, dvi&, dvi&);
 void thrust_transform_hashmap_size(dvi&, dvi&, float);
 void thrust_sub_for_each(dvi&, int);
+void thrust_sort_graph(dvi&, dvi&, dvf&);
+void thrust_reduce_by_key(dvi&, dvi&, dvi&, dvi&);
 
 #endif
    
