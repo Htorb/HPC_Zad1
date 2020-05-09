@@ -32,8 +32,9 @@ void thrust_sort(dvi& v) {
     thrust::sort(v.begin(), v.end());
 }
 
-void thrust_unique(dvi& v) { 
-    thrust::unique(v.begin(), v.end());
+int thrust_unique(dvi& v) { 
+    auto end = thrust::unique(v.begin(), v.end());
+    return end - v.begin();
 }
 
 float thrust_sum(dvf& v) {

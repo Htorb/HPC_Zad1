@@ -17,7 +17,7 @@ using dvi = thrust::device_vector<int>;
 using dvf = thrust::device_vector<float>;
 
 void thrust_sort(dvi&);
-void thrust_unique(dvi&);
+int thrust_unique(dvi&);
 float thrust_sum(dvf&);
 void thrust_sequence(dvi&);
 void thrust_inclusive_scan(dvi&);

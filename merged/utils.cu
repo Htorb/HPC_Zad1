@@ -78,13 +78,12 @@ void read_graph_from_file( std::string& matrix_file,
 
         m++;
         tmp.push_back(tr(pi(v1 - 1,v2 - 1),f));
-        //if graph is undirected
         if (v1 != v2) {
             m++;
             tmp.push_back(tr(pi(v2 - 1,v1 - 1),f));
-        }
+        } 
     }
-
+    
     std::sort(tmp.begin(), tmp.end());
 
     V = vi(n + 1, 0);

@@ -5,6 +5,8 @@
 #include <set>
 #include <cassert> 
 #include <string>
+#include <iomanip> //todo remove
+
 
 #include "thrust_wrappers.h"
 #include "utils.h"
@@ -76,7 +78,7 @@ __global__ void compute_move(int n,
             int new_C = hash_comm[pos];
             
             float deltaMod = hash_weight[pos] / weights_sum 
-                                + k[i] * (ac[ci] - k[i] - ac[new_C]) / (2 * weights_sum * weights_sum);
+                                + k[i] * (ac[ci] - k[i] - ac[new_C]) / 2 / weights_sum / weights_sum;
         
             if (comm_size[new_C] > 1 || comm_size[ci] > 1 || new_C < ci) {
                 update_max_modularity(&partial_C_max[tid], &partial_delta_mod[tid], new_C, deltaMod);
@@ -124,12 +126,14 @@ __global__ void calculate_modularity(int n,
     for (int i = bid * bdim + tid; i < n; i += step) {
         for (int j = V[i]; j < V[i + 1]; ++j) {
             if (C[N[j]] == C[i]) {
-                a += W[j] / (2 * weights_sum);
+                a += W[j] / 2 / weights_sum;
+                // printf("jestem: %d dodaje: %f\n", i , W[j] / 2 / weights_sum);
             }
         }
     }
     for (int i = bid * bdim + tid; i < c; i += step) {
-        a -= ac[uniqueC[i]] * ac[uniqueC[i]] / (4 * weights_sum * weights_sum);
+        a -= ac[uniqueC[i]] * ac[uniqueC[i]] / 4 / weights_sum / weights_sum;
+        // printf("jestem: %d odejmuje: %f\n", i , ac[uniqueC[i]] * ac[uniqueC[i]] / 4 / weights_sum / weights_sum);
     }
     partials[tid] = a;
     __syncthreads();
@@ -165,8 +169,7 @@ __global__ void initialize_ac(int n, int* C, float* k, float* ac) {
 void initialize_uniqueC_and_C(int n, const dvi& C, dvi& uniqueC, int& c) {
     uniqueC = C;
     thrust_sort(uniqueC);
-    thrust_unique(uniqueC);
-    c = uniqueC.size();
+    c = thrust_unique(uniqueC);
 }
         
 __global__ void initialize_degree(int n, int* V, float* W, int* degree) {
@@ -272,14 +275,11 @@ __global__ void merge_community_initialize_graph(int* hash_offset,
         int edgeId = aggregated_V[i];
         for (int pos = hash_offset[i]; pos < hash_offset[i + 1]; ++pos) {
             int new_cj = hash_comm[pos];
-
             if (new_cj == EMPTY_SLOT) {
                 continue;
             }
-            float weights_sum = hash_weight[pos];
-
             aggregated_N[edgeId] = new_cj;
-            aggregated_W[edgeId] = weights_sum;
+            aggregated_W[edgeId] = hash_weight[pos];
             edgeId++;
         }        
     }
@@ -340,9 +340,10 @@ int main(int argc, char *argv[]) {
         k = vf(n, 0);
         initialize_k<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(V), ptr(W), ptr(k)); 
 
+            
         if (debug) {
             float ksum = thrust_sum(k);
-            assert(abs(ksum - 2 * weights_sum) < 0.0001);
+            assert(abs(ksum - 2 * weights_sum) < 0.001 * ksum);
         }
 
         ac = k; 
@@ -383,7 +384,7 @@ int main(int argc, char *argv[]) {
             initialize_ac<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(C), ptr(k), ptr(ac));
             if (debug) {
                 float acsum = thrust_sum(ac);                             
-                assert(abs(acsum - 2 * weights_sum) < 0.0001);
+                assert(abs(acsum - 2 * weights_sum) < 0.001 * acsum);
             }
             
             Qp = Qc;
@@ -393,6 +394,10 @@ int main(int argc, char *argv[]) {
             calculate_modularity<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, c, ptr(V), ptr(N), ptr(W), ptr(C), 
                                                             ptr(uniqueC), ptr(ac), weights_sum, ptr(dQc));
             Qc = thrust_sum(dQc);
+            // for (int i = 0; i < n; ++i) {
+            //     std::cerr << C[i] << " ";
+            // }
+            // std::cerr << std::endl;
             
             std::cerr << "modularity: " << Qc << std::endl;
 
@@ -474,3 +479,24 @@ int main(int argc, char *argv[]) {
     }
     return 0;
 }
+
+
+// struct Bucket {
+//     int from;
+//     int to;
+
+//     Bucket(int _from, int _to) : from(_from), to(_to) {};
+
+//     __host__ __device__
+//     bool operator()(const int &x) const {
+//         return from <= x && x <= to;
+//     }
+// };
+
+// dvi reorder(n);
+// thrust_sequence(reorder);
+// degree_copy = degree;
+// thrust::partition(thrust::make_zip_iterator(thrust::make_tuple(degree_copy.begin(), reoreder.begin())),
+//                     thrust::make_zip_iterator(thrust::make_tuple(degree_copy.end(), reorder.end())),
+//                     degree_copy.begin(),
+//                     Bucket(3,7));
