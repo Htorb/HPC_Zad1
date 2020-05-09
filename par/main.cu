@@ -17,7 +17,7 @@
 
 #define NO_EDGE 0
 
-#define BLOCKS_NUMBER 512
+#define BLOCKS_NUMBER 64
 #define THREADS_PER_BLOCK 128
 
 
