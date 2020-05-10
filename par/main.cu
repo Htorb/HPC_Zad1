@@ -17,8 +17,8 @@
 
 #define NO_EDGE 0
 
-#define BLOCKS_NUMBER 64
-#define THREADS_PER_BLOCK 128
+#define BLOCKS_NUMBER 128
+#define THREADS_PER_BLOCK 256
 
 
 struct StepPolicy {
@@ -128,8 +128,15 @@ __global__ void calculate_modularity(int n,
     int step = blockDim.x * gridDim.x;
 
     float a = 0;
-    for (int i = bid * bdim + tid; i < n; i += step) {
-        for (int j = V[i]; j < V[i + 1]; ++j) {
+    // for (int i = bid * bdim + tid; i < n; i += step) {
+    //     for (int j = V[i]; j < V[i + 1]; ++j) {
+    //         if (C[N[j]] == C[i]) {
+    //             a += W[j] / 2 / weights_sum;
+    //         }
+    //     }
+    // }
+    for (int i = blockIdx.x; i < n; i += gridDim.x) {    
+        for (int j = tid + V[i]; j < V[i + 1]; j += bdim) {
             if (C[N[j]] == C[i]) {
                 a += W[j] / 2 / weights_sum;
             }
@@ -414,11 +421,14 @@ int main(int argc, char *argv[]) {
             dvi hash_comm;
             dvf hash_weight;
             hashmap_create(hash_size, hash_offset, hash_comm, hash_weight);
-            
+
+            start_recording_time(tmp_start_time, tmp_stop_time);
 
             compute_move<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(new_C), ptr(V), ptr(N), ptr(W), 
                                                                  ptr(C), ptr(comm_size), ptr(k), ptr(ac), 
                                                                  weights_sum, ptr(hash_offset), ptr(hash_weight), ptr(hash_comm));
+            float tmp_elapsed_time = stop_recording_time(tmp_start_time, tmp_stop_time); //TODO delete
+            fprintf(stderr, "%3.1f ms compute move\n", tmp_elapsed_time);
 
             C = new_C;
 
@@ -431,11 +441,15 @@ int main(int argc, char *argv[]) {
             
             Qp = Qc;
             initialize_uniqueC_and_C(n, C, uniqueC, c);
-
+            start_recording_time(tmp_start_time, tmp_stop_time);
             dvf dQc(BLOCKS_NUMBER);
             calculate_modularity<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, c, ptr(V), ptr(N), ptr(W), ptr(C), 
                                                             ptr(uniqueC), ptr(ac), weights_sum, ptr(dQc));
             Qc = thrust_sum(dQc);
+
+            tmp_elapsed_time = stop_recording_time(tmp_start_time, tmp_stop_time); //TODO delete
+            fprintf(stderr, "%3.1f ms compute modularity\n", tmp_elapsed_time);
+
             if (debug) {
                 std::cerr << "modularity: " << Qc << std::endl;
             }
@@ -492,11 +506,16 @@ int main(int argc, char *argv[]) {
         dvf hash_weight;
         thrust_transform_hashmap_size(hash_size, hash_size, 1.5);
         hashmap_create(hash_size, hash_offset, hash_comm, hash_weight);
-       
+        
+        start_recording_time(tmp_start_time, tmp_stop_time);
+
         merge_community_fill_hashmap<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(n, ptr(V), ptr(N),  ptr(W), ptr(C), ptr(comm), 
                                 ptr(degree), ptr(newID), ptr(hash_offset), ptr(hash_comm), ptr(hash_weight), debug);
         merge_community_initialize_graph<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(ptr(hash_offset), ptr(hash_comm), 
                                 ptr(hash_weight), aggregated_n, ptr(aggregated_V),  ptr(aggregated_N), ptr(aggregated_W));
+
+        float elapsed_time = stop_recording_time(tmp_start_time, tmp_stop_time); //TODO delete
+        fprintf(stderr, "%3.1f ms move communities\n", elapsed_time);
 
         save_final_communities<<<BLOCKS_NUMBER, THREADS_PER_BLOCK>>>(initial_n, ptr(finalC), ptr(C), ptr(newID));
 

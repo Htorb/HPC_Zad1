@@ -134,8 +134,13 @@ void readGraphFromFile(const string& matrixFile,
     ifstream matrixStream;
     matrixStream.open(matrixFile);
     int entries = 0;
-    matrixStream >> n >> n >> entries;
-    
+    std::string line;
+    while (std::getline(matrixStream, line)) {
+        if (line[0] != '%') {
+            sscanf(line.c_str(), "%d %d %d", &n, &n, &entries);
+            break;
+        }
+    }  
     m = 0;
     vector<tr> tmp;
     for (int i = 0; i < entries; i++) {
@@ -378,8 +383,6 @@ int main(int argc, char *argv[]) {
         //modularity optimisation phase
         initializeUniqueCAndC(n, C, uniqueC, c);
         Qc = calculateModularity(n, c, V, N, W, C, uniqueC, ac, wm);
-        Qba = Qc;
-
         cerr << "modularity: " << Qc << endl;
         if (DEBUG) {
             cerr << "-----------------------------------------" << endl;
@@ -391,11 +394,13 @@ int main(int argc, char *argv[]) {
             cerr << "-----------------------------------------" << endl;
         }
         do {
+
             newComm = C;
             comSize = vi(n, 0); //check if needed
             initializeComSize(n, C, comSize);
             vi comDegree(n, 0); 
 
+            auto tmpStartTime = chrono::steady_clock::now();
             for (int i = 0; i < n; ++i) {
                 computeMove(i, n, newComm, V, N, W, C, comSize, k, ac, wm);
             }
@@ -410,6 +415,10 @@ int main(int argc, char *argv[]) {
             initializeUniqueCAndC(n, C, uniqueC, c);
             Qc = calculateModularity(n, c, V, N, W, C, uniqueC, ac, wm);
 
+            auto tmpEndTime= chrono::steady_clock::now();
+            auto diffTime = tmpEndTime - tmpStartTime;
+            cerr << chrono::duration <double, milli> (diffTime).count() << " ms compute move time" << endl;
+
             cerr << "modularity: " << Qc << endl;
             if (DEBUG) {
                 cerr << "-----------------------------------------" << endl;
@@ -421,7 +430,7 @@ int main(int argc, char *argv[]) {
                 cerr << "-----------------------------------------" << endl;
             }
 
-        } while (abs(Qc - Qp) > threshold);
+        } while (Qc - Qp > threshold);
 
         //aggregation phase
         comSize = vi(n, 0);
@@ -457,6 +466,7 @@ int main(int argc, char *argv[]) {
         vi newN; 
         vf newW;
 
+        auto tmpStartTime = chrono::steady_clock::now();
         newn = newID.back();
         if (newn == n) {
             break;
@@ -508,6 +518,9 @@ int main(int argc, char *argv[]) {
             edgeId++;
         }
 
+        auto tmpEndTime= chrono::steady_clock::now();
+        auto diffTime = tmpEndTime - tmpStartTime;
+        cerr << chrono::duration <double, milli> (diffTime).count() << " ms move communities time" << endl;
 
         for (int i = 0; i < initialN; ++i) {
             finalC[i] = newID[C[finalC[i]]] - 1;

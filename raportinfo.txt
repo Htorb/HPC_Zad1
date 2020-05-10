@@ -2,3 +2,14 @@ holywood: 1139905 1139905 57515616
 F2: 71505 71505 2682895
 dictionary28: 52652 52652 89038
 
+hollywood:    1 block   244547.5
+              2 blocks  133122.6
+              4 blocks   77816.8
+              8 blocks   48633.3
+             16 blocks   31775.7
+             32 blocks   24093.8
+             64 blocks   20481.4
+            128 blocks   18754.0
+            256 blocks   17860.3 
+            512 blocks   17851.6
+           1024 blocks   18263.7
