@@ -1,12 +1,12 @@
 CC=/usr/local/cuda/bin/nvcc
 DFLAGS=#-g -G
-OFLAGS=-Xptxas -O3#todo report how it improves speed (or not)
+OFLAGS=-Xptxas -O3
 OBJECTS=utils.o thrust_wrappers.o hashmap_utils.o main.o
 ARCH=-gencode=arch=compute_70,code=sm_70
 
 
 gpulouvain: $(OBJECTS) 
-	$(CC) $(ARCH) -gencode=arch=compute_70,code=compute_70 $(OBJECTS) -o gpulouvain
+	$(CC) $(ARCH) $(OBJECTS) -o gpulouvain
 
 main.o:  main.cu
 	$(CC) $(OFLAGS) $(ARCH) -dc main.cu
